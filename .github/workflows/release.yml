@@ -1,4 +1,4 @@
-﻿name: release
+name: release
 
 on:
   push:
@@ -41,8 +41,7 @@ jobs:
             platform: windows-x86_64
             paths: |
               src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.nsis.zip*
+              src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe*
           - label: Linux x64
             os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -51,13 +50,12 @@ jobs:
             platform: linux-x86_64
             paths: |
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/deb/*.deb
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
-              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage.tar.gz*
+              src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage*
               src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/rpm/*.rpm
           - label: macOS Intel
             os: macos-15-intel
             target: x86_64-apple-darwin
-            bundles: dmg
+            bundles: dmg,app
             artifact: axiom-macos-x64
             platform: darwin-x86_64
             paths: |
@@ -66,7 +64,7 @@ jobs:
           - label: macOS Apple Silicon
             os: macos-15
             target: aarch64-apple-darwin
-            bundles: dmg
+            bundles: dmg,app
             artifact: axiom-macos-arm64
             platform: darwin-aarch64
             paths: |
@@ -143,8 +141,8 @@ jobs:
           for dir in release-artifacts/*; do
             name="$(basename "$dir")"
             case "$name" in
-              *windows-x86_64*) platform="windows-x86_64"; updater_glob="*.nsis.zip"; updater_suffix="nsis.zip" ;;
-              *linux-x86_64*) platform="linux-x86_64"; updater_glob="*.AppImage.tar.gz"; updater_suffix="AppImage.tar.gz" ;;
+              *windows-x86_64*) platform="windows-x86_64"; updater_glob="*.exe"; updater_suffix="exe" ;;
+              *linux-x86_64*) platform="linux-x86_64"; updater_glob="*.AppImage"; updater_suffix="AppImage" ;;
               *darwin-x86_64*) platform="darwin-x86_64"; updater_glob="*.app.tar.gz"; updater_suffix="app.tar.gz" ;;
               *darwin-aarch64*) platform="darwin-aarch64"; updater_glob="*.app.tar.gz"; updater_suffix="app.tar.gz" ;;
               *) echo "Unknown artifact directory: $name" >&2; exit 1 ;;

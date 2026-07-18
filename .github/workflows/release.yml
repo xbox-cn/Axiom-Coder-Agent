@@ -1,4 +1,4 @@
-﻿name: release
+name: release
 
 on:
   push:
@@ -121,8 +121,20 @@ jobs:
         with:
           path: release-artifacts
           merge-multiple: true
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p release-files
+          while IFS= read -r -d '' file; do
+            name="$(basename "$file")"
+            if [[ -e "release-files/$name" ]]; then
+              echo "Duplicate release asset name: $name" >&2
+              exit 1
+            fi
+            cp "$file" "release-files/$name"
+          done < <(find release-artifacts -type f -print0)
       - name: Generate SHA-256 checksums
-        working-directory: release-artifacts
+        working-directory: release-files
         run: find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS.txt
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -133,4 +145,5 @@ jobs:
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
-          files: release-artifacts/*
+          overwrite_files: true
+          files: release-files/*

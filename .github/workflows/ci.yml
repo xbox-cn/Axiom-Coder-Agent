@@ -38,3 +38,84 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - run: cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+
+  linux-appimage:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xvfb
+      - run: pnpm install --frozen-lockfile
+      - name: Build unsigned AppImage
+        run: >-
+          pnpm tauri build --bundles appimage
+          --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Repair and smoke-test AppImage
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="src-tauri/target/release/bundle/appimage"
+          appimage="$(find "$bundle" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$appimage" && test -s "$appimage"
+          bash .github/scripts/repair-appimage.sh "$appimage"
+
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          (cd "$temp_dir" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
+          test -x "$temp_dir/squashfs-root/AppRun"
+          for pattern in \
+            'libEGL.so*' 'libEGL_mesa.so*' 'libGL.so*' 'libGLX.so*' \
+            'libGLdispatch.so*' 'libGLESv2.so*' 'libgbm.so*' 'libdrm.so*' \
+            'libwayland-client.so*' 'libwayland-cursor.so*' \
+            'libwayland-egl.so*' 'libwayland-server.so*'; do
+            if compgen -G "$temp_dir/squashfs-root/usr/lib/$pattern" > /dev/null; then
+              echo "Conflicting graphics library remains in AppImage: $pattern" >&2
+              exit 1
+            fi
+          done
+
+          mkdir -p "$temp_dir/home" "$temp_dir/data" "$temp_dir/config" "$temp_dir/cache"
+          set +e
+          output="$(env \
+            HOME="$temp_dir/home" \
+            XDG_DATA_HOME="$temp_dir/data" \
+            XDG_CONFIG_HOME="$temp_dir/config" \
+            XDG_CACHE_HOME="$temp_dir/cache" \
+            timeout --signal=TERM --kill-after=2s 15s \
+            dbus-run-session -- xvfb-run -a "$GITHUB_WORKSPACE/$appimage" \
+            --appimage-extract-and-run 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          if [[ "$status" -ne 124 ]]; then
+            echo "AppImage exited unexpectedly with status $status" >&2
+            exit 1
+          fi
+          if grep -Eq 'EGL_BAD_(ALLOC|PARAMETER)|Aborting|symbol lookup error' <<<"$output"; then
+            echo "AppImage graphics process failed during startup" >&2
+            exit 1
+          fi

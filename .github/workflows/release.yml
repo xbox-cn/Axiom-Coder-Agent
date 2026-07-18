@@ -116,13 +116,28 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles app
-      - name: Upload installers and updater artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}-${{ matrix.platform }}-${{ github.ref_name }}
-          if-no-files-found: error
-          retention-days: 14
-          path: ${{ matrix.paths }}
+      - name: Repair Linux AppImage graphics runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
+          appimage="$(find "$bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$appimage" && test -s "$appimage"
+          bash .github/scripts/repair-appimage.sh "$appimage"
+
+          # Repacking changes the updater payload, so replace the signature from
+          # the initial Tauri build before uploading any artifacts.
+          rm -f "${appimage}.sig"
+          pnpm tauri signer sign \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}" \
+            "$appimage"
+          test -s "${appimage}.sig"
+          echo "Repacked and re-signed $appimage"
       - name: Smoke-test Linux packages
         if: runner.os == 'Linux'
         shell: bash
@@ -139,11 +154,29 @@ jobs:
           trap 'rm -rf "$temp_dir"' EXIT
           (cd "$temp_dir" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
           test -x "$temp_dir/squashfs-root/AppRun"
+          for pattern in \
+            'libEGL.so*' 'libEGL_mesa.so*' 'libGL.so*' 'libGLX.so*' \
+            'libGLdispatch.so*' 'libGLESv2.so*' 'libgbm.so*' 'libdrm.so*' \
+            'libwayland-client.so*' 'libwayland-cursor.so*' \
+            'libwayland-egl.so*' 'libwayland-server.so*'; do
+            if compgen -G "$temp_dir/squashfs-root/usr/lib/$pattern" > /dev/null; then
+              echo "Conflicting graphics library remains in AppImage: $pattern" >&2
+              exit 1
+            fi
+          done
+          test -s "${appimage}.sig"
           echo "AppImage extraction and AppRun validation passed"
           dpkg-deb --info "$deb" >/dev/null
           echo "DEB metadata validation passed"
           rpm -qip "$rpm_file" >/dev/null
           echo "RPM metadata validation passed"
+      - name: Upload installers and updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-${{ matrix.platform }}-${{ github.ref_name }}
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ matrix.paths }}
 
   release:
     name: Publish GitHub Release

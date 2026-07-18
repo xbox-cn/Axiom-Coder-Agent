@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Axiom",
+  "version": "1.0.0",
+  "identifier": "com.axiom.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Axiom",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 760,
+        "minHeight": 680,
+        "center": true,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "msi",
+      "nsis"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "publisher": "Axiom Contributors",
+    "copyright": "Copyright (c) 2026 Axiom Contributors",
+    "category": "DeveloperTool",
+    "shortDescription": "Local-first AI coding agent desktop app",
+    "longDescription": "Axiom is a local-first, multi-provider AI coding agent with MCP, Git, terminal, context and usage inspection."
+  }
+}

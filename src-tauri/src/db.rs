@@ -50,6 +50,7 @@ impl Database {
                 status TEXT NOT NULL DEFAULT 'idle',
                 unread_approval INTEGER NOT NULL DEFAULT 0,
                 archived INTEGER NOT NULL DEFAULT 0,
+                run_preferences_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -204,7 +205,7 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value_json TEXT NOT NULL
             );
-            PRAGMA user_version = 7;
+            PRAGMA user_version = 8;
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -244,6 +245,7 @@ impl Database {
             ("goal_turns", "updated_at", "TEXT"),
             ("goal_turns", "completed_at", "TEXT"),
             ("threads", "archived", "INTEGER NOT NULL DEFAULT 0"),
+            ("threads", "run_preferences_json", "TEXT"),
             ("runs", "reasoning_content", "TEXT NOT NULL DEFAULT ''"),
         ] {
             let exists = {
@@ -590,6 +592,16 @@ impl Database {
     pub fn get_thread(&self, id: &str) -> Result<ThreadDetail, String> {
         let thread = self.get_thread_summary(id)?;
         let conn = self.conn.lock();
+        let run_preferences = conn
+            .query_row(
+                "SELECT run_preferences_json FROM threads WHERE id=?1",
+                params![id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .flatten()
+            .and_then(|value| serde_json::from_str::<ThreadRunPreferences>(&value).ok());
         let mut msg_stmt = conn.prepare("SELECT id, thread_id, role, content, created_at, run_id, pinned, attachments_json FROM messages WHERE thread_id = ?1 ORDER BY created_at").map_err(|e| e.to_string())?;
         let msg_rows = msg_stmt
             .query_map(params![id], |row| {
@@ -666,11 +678,34 @@ impl Database {
         }
         Ok(ThreadDetail {
             thread,
+            run_preferences,
             messages,
             runs,
             context_snapshots,
             goals,
         })
+    }
+
+    pub fn save_thread_run_preferences(
+        &self,
+        thread_id: &str,
+        preferences: &ThreadRunPreferences,
+    ) -> Result<ThreadRunPreferences, String> {
+        let changed = self
+            .conn
+            .lock()
+            .execute(
+                "UPDATE threads SET run_preferences_json=?2 WHERE id=?1",
+                params![
+                    thread_id,
+                    serde_json::to_string(preferences).map_err(|error| error.to_string())?
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err("任务不存在".to_string());
+        }
+        Ok(preferences.clone())
     }
 
     pub fn add_message(
@@ -2053,6 +2088,26 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn thread_run_preferences_round_trip() {
+        let (_base, db, _project, thread) = setup_db();
+        let preferences = ThreadRunPreferences {
+            provider_id: "provider-a".into(),
+            model_id: "model-a".into(),
+            thinking_level: ThinkingLevel::High,
+            permission_mode: PermissionMode::FullAccess,
+            run_mode: RunMode::Goal,
+        };
+
+        db.save_thread_run_preferences(&thread.id, &preferences)
+            .unwrap();
+
+        assert_eq!(
+            db.get_thread(&thread.id).unwrap().run_preferences,
+            Some(preferences)
+        );
     }
 
     #[test]

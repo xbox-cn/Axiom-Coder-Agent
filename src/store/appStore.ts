@@ -19,6 +19,7 @@ import type {
   ShellResult,
   ThinkingLevel,
   ThreadDetail,
+  ThreadRunPreferences,
   ToolActivity,
 } from "../lib/types";
 
@@ -107,6 +108,46 @@ export const statusIsRunning = (status?: string) =>
 
 const terminalStatus = (status: string) => ["completed", "failed", "cancelled"].includes(status);
 
+let preferenceSaveQueue: Promise<unknown> = Promise.resolve();
+
+function persistActiveThreadPreferences() {
+  const state = useAppStore.getState();
+  const threadId = state.activeThreadId;
+  if (!threadId) return;
+  const preferences: ThreadRunPreferences = {
+    providerId: state.providerId,
+    modelId: state.modelId,
+    thinkingLevel: state.thinkingLevel,
+    permissionMode: state.runMode === "plan" ? "read-only" : state.permissionMode,
+    runMode: state.runMode,
+  };
+  preferenceSaveQueue = preferenceSaveQueue
+    .then(() => api.saveThreadRunPreferences(threadId, preferences))
+    .catch((error) => {
+      if (useAppStore.getState().activeThreadId === threadId) useAppStore.setState({ error: String(error) });
+    });
+}
+
+function resolveThreadPreferences(detail: ThreadDetail, data: AppBootstrap, current: ThreadRunPreferences): ThreadRunPreferences {
+  const activeRun = [...detail.runs].reverse().find((item) => statusIsRunning(item.status));
+  const latestRun = detail.runs.at(-1);
+  const source = activeRun?.config ?? detail.runPreferences ?? latestRun?.config ?? current;
+  const globalProviderId = data.settings.defaultProviderId ?? data.providers[0]?.id ?? "";
+  const provider = data.providers.find((item) => item.id === source.providerId)
+    ?? data.providers.find((item) => item.id === globalProviderId)
+    ?? data.providers[0];
+  const requestedModel = provider?.models.find((model) => model.modelId === source.modelId)?.modelId;
+  const globalModel = provider?.models.find((model) => model.modelId === data.settings.defaultModelId)?.modelId;
+  const runMode = source.runMode ?? "agent";
+  return {
+    providerId: provider?.id ?? "",
+    modelId: requestedModel ?? globalModel ?? provider?.models[0]?.modelId ?? "",
+    thinkingLevel: source.thinkingLevel ?? data.settings.defaultThinkingLevel,
+    permissionMode: runMode === "plan" ? "read-only" : source.permissionMode ?? data.settings.defaultPermission,
+    runMode,
+  };
+}
+
 const initialTransientState = {
   activeRunId: null,
   streamingContent: "",
@@ -188,17 +229,24 @@ export const useAppStore = create<AppStore>((set, get) => ({
     try {
       const detail = await api.getThread(id);
       const run = [...detail.runs].reverse().find((item) => statusIsRunning(item.status));
+      const state = get();
+      const data = state.bootstrapData;
+      const preferences = data
+        ? resolveThreadPreferences(detail, data, {
+            providerId: state.providerId,
+            modelId: state.modelId,
+            thinkingLevel: state.thinkingLevel,
+            permissionMode: state.permissionMode,
+            runMode: state.runMode,
+          })
+        : null;
       set({
         threadDetail: detail,
         activeProjectId: detail.thread.projectId,
         contextRecords: detail.contextSnapshots.map((snapshot) => ({ id: snapshot.id, summary: snapshot.summary, createdAt: snapshot.createdAt })),
         loading: false,
         activeRunId: run?.id ?? null,
-        providerId: run?.config.providerId ?? get().providerId,
-        modelId: run?.config.modelId ?? get().modelId,
-        thinkingLevel: run?.config.thinkingLevel ?? get().thinkingLevel,
-        permissionMode: run?.config.permissionMode ?? get().permissionMode,
-        runMode: run?.config.runMode ?? get().runMode,
+        ...(preferences ?? {}),
         attachments: [],
       });
       await get().refreshInspector();
@@ -625,6 +673,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       providerId: provider.id,
       modelId: provider.models[0]?.modelId ?? "",
     }));
+    persistActiveThreadPreferences();
     return provider;
   },
 
@@ -639,6 +688,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
         modelId: state.providerId === providerId ? fallback?.models[0]?.modelId ?? "" : state.modelId,
       };
     });
+    persistActiveThreadPreferences();
   },
 
   saveMcp: async (input) => {
@@ -679,11 +729,18 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const recent = state.recentModelByProvider[id];
     const modelId = provider?.models.some((model) => model.modelId === recent) ? recent : provider?.models[0]?.modelId ?? "";
     set({ providerId: id, modelId });
+    persistActiveThreadPreferences();
   },
-  setModelId: (modelId) => set((state) => ({ modelId, recentModelByProvider: state.providerId ? { ...state.recentModelByProvider, [state.providerId]: modelId } : state.recentModelByProvider })),
-  setThinkingLevel: (thinkingLevel) => set({ thinkingLevel }),
-  setPermissionMode: (permissionMode) => set({ permissionMode }),
-  setRunMode: (runMode) => set({ runMode }),
+  setModelId: (modelId) => {
+    set((state) => ({ modelId, recentModelByProvider: state.providerId ? { ...state.recentModelByProvider, [state.providerId]: modelId } : state.recentModelByProvider }));
+    persistActiveThreadPreferences();
+  },
+  setThinkingLevel: (thinkingLevel) => { set({ thinkingLevel }); persistActiveThreadPreferences(); },
+  setPermissionMode: (permissionMode) => { set({ permissionMode }); persistActiveThreadPreferences(); },
+  setRunMode: (runMode) => {
+    set((state) => ({ runMode, permissionMode: runMode === "plan" ? "read-only" : state.permissionMode }));
+    persistActiveThreadPreferences();
+  },
   addAttachments: async (paths) => {
     try {
       const selected = paths ?? await api.pickAttachmentFiles();

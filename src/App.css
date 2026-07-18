@@ -514,7 +514,8 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 /* Task and message actions */
 .thread-item{position:relative;min-height:31px;border-radius:7px;display:flex;align-items:center}.thread-item:hover{background:var(--surface-3)}.thread-item.active{background:var(--surface);box-shadow:0 1px 2px rgba(20,20,16,.05)}.thread-select{height:31px!important;min-width:0;flex:1!important;background:transparent!important;box-shadow:none!important}.thread-actions{display:flex;opacity:0;pointer-events:none;padding-right:3px}.thread-item:hover .thread-actions,.thread-item:focus-within .thread-actions{opacity:1;pointer-events:auto}.thread-actions button{width:25px!important;height:25px!important;min-height:25px!important;padding:0!important;display:grid!important;place-items:center}.thread-actions .delete:hover{color:var(--red);background:var(--red-soft)}.archived-empty{font-size:12px;color:var(--faint);padding:7px 9px}.message{position:relative}.message-actions{display:flex;gap:2px;color:var(--faint);opacity:0;transition:opacity 140ms ease}.message:hover .message-actions,.message:focus-within .message-actions{opacity:1}.message-actions button{width:27px;height:27px;border-radius:7px;display:grid;place-items:center}.message-actions button:hover{color:var(--text);background:var(--surface-3)}.user-actions{justify-content:flex-end;margin-top:3px}.assistant-actions{position:absolute;right:0;top:-4px}.message.assistant .message-body{position:relative}
 
-.question-card { display:grid; gap:12px; padding:16px; margin:10px 0; border:1px solid var(--border-strong); border-radius:14px; background:var(--panel); box-shadow:var(--shadow-soft); }
+.question-dialog-backdrop { position:fixed; inset:0; z-index:1200; display:grid; place-items:center; padding:24px; background:color-mix(in srgb, var(--canvas) 42%, transparent); backdrop-filter:blur(3px); }
+.question-card { display:grid; gap:12px; width:min(520px, 100%); max-height:min(680px, calc(100vh - 48px)); overflow:auto; padding:18px; border:1px solid var(--border-strong); border-radius:14px; background:var(--panel); box-shadow:var(--shadow-float); }
 .question-heading { display:flex; gap:10px; align-items:flex-start; }
 .question-heading > svg { color:var(--accent); margin-top:2px; }
 .question-heading div { display:grid; gap:3px; }
@@ -597,3 +598,12 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 .tool-activity-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tool-activity-row time{color:var(--faint)}
 @media(prefers-reduced-motion:reduce){.reasoning-block>summary>svg:last-child,.tool-activity-group>summary>svg:last-child{transition:none}}
+
+
+/* Native close confirmation */
+.close-choice-backdrop{position:fixed;inset:0;z-index:1400;display:grid;place-items:center;padding:24px;background:color-mix(in srgb,var(--canvas) 48%,transparent);backdrop-filter:blur(3px)}
+.close-choice-dialog{width:min(440px,calc(100vw - 32px));padding:20px;border:1px solid var(--border);border-radius:14px;background:var(--surface);box-shadow:var(--shadow)}
+.close-choice-heading{display:flex;align-items:flex-start;gap:12px}.close-choice-icon{width:34px;height:34px;flex:0 0 auto;display:grid;place-items:center;border-radius:9px;background:var(--accent-soft);color:var(--accent)}
+.close-choice-heading h2{margin:1px 0 5px;font-size:15px;font-weight:650}.close-choice-heading p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}
+.close-choice-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:20px}.close-choice-actions button{min-height:34px;display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:0 12px;border-radius:8px;font-size:12px}
+@media(max-width:520px){.close-choice-actions{display:grid}.close-choice-actions button{width:100%}}

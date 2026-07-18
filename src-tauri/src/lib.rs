@@ -18,7 +18,11 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tauri::{Emitter, Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Emitter, Manager, State,
+};
 use tokio::sync::{oneshot, watch};
 
 struct RunningRun {
@@ -32,6 +36,62 @@ struct AppState {
     db: Arc<Database>,
     running: Arc<Mutex<HashMap<String, RunningRun>>>,
     pending_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
+}
+
+fn show_main_window(app: &tauri::AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window is unavailable".to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    if window.is_minimized().map_err(|error| error.to_string())? {
+        window.unminimize().map_err(|error| error.to_string())?;
+    }
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let show = MenuItem::with_id(app, "show", "\u{663e}\u{793a} Axiom", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "\u{9000}\u{51fa}", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("Axiom")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                let _ = show_main_window(app);
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let _ = show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn hide_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "main window is unavailable".to_string())?
+        .hide()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }
 
 const MAX_ATTACHMENTS: usize = 10;
@@ -68,6 +128,20 @@ fn create_thread(
 #[tauri::command]
 fn get_thread(state: State<'_, AppState>, thread_id: String) -> Result<ThreadDetail, String> {
     state.db.get_thread(&thread_id)
+}
+
+#[tauri::command]
+fn save_thread_run_preferences(
+    state: State<'_, AppState>,
+    thread_id: String,
+    mut preferences: ThreadRunPreferences,
+) -> Result<ThreadRunPreferences, String> {
+    if preferences.run_mode == RunMode::Plan {
+        preferences.permission_mode = PermissionMode::ReadOnly;
+    }
+    state
+        .db
+        .save_thread_run_preferences(&thread_id, &preferences)
 }
 
 #[tauri::command]
@@ -922,6 +996,22 @@ Available names and arguments:
 - mcp_call {"serverId":"configured MCP id","tool":"tool name","arguments":{}}
 Use relative paths. Inspect before editing. Prefer apply_patch over full rewrites. After a tool result is returned, continue reasoning and either call the next tool or provide the final answer. Never fabricate tool results.
 "#;
+const PLAN_TOOL_PROTOCOL: &str = r#"
+You are planning against the current workspace with read-only Axiom tools. When inspection or a user decision is required, output exactly one tool request and no final answer in this format:
+```axiom-tool
+{"name":"read_file","arguments":{"path":"src/main.rs"}}
+```
+Available names and arguments:
+- list_files {"path":"optional relative directory"}
+- read_file {"path":"relative file"}
+- search_files {"query":"text","path":"optional relative directory"}
+- git_status {}
+- git_diff {}
+- mcp_call {"serverId":"configured MCP id","tool":"read-only tool name","arguments":{}}
+- ask_user {"question":"one concise decision-critical question","options":[{"id":"stable-id","label":"short label","description":"impact or tradeoff"}]}
+Use relative paths. Inspect enough project evidence before planning. Never request writes, patches, deletion, or shell execution. After a tool result is returned, continue inspecting or provide the final decision-complete plan. Never fabricate tool results.
+"#;
+
 const CANCELLED_SENTINEL: &str = "__AXIOM_CANCELLED__";
 const MAX_TOOL_LOOPS: usize = 16;
 
@@ -1002,13 +1092,17 @@ async fn run_agent(
                         run.config.permission_mode,
                         run.config.run_mode,
                         if run.config.run_mode == RunMode::Plan {
-                            "Plan mode is enforced read-only. Inspect the project and return a decision-complete implementation plan. Do not attempt writes or shell commands. MCP calls are allowed only for tools explicitly marked read-only and non-destructive; all others are rejected by the permission layer. When an ambiguity materially affects the plan, call ask_user with one short question and 2-3 concrete options instead of asking in ordinary response text."
+                            "Plan mode is enforced read-only. Inspect the project before planning and return a decision-complete implementation plan with: summary, relevant files, ordered implementation steps, verification, risks, and explicit assumptions. Do not attempt writes or shell commands. MCP calls are allowed only for tools explicitly marked read-only and non-destructive; all others are rejected by the permission layer. If one ambiguity materially affects the plan, call ask_user with one short question and 2-3 concrete options instead of asking in ordinary response text. Do not finish with unresolved questions."
                         } else if run.config.run_mode == RunMode::Goal {
                             "Goal mode continues without a total turn or time limit. At the end of every non-tool response append exactly one control block: ```axiom-goal\n{\"action\":\"continue|complete|blocked\"}\n```. Use continue while meaningful work remains, complete only when verified, and blocked only when progress requires user input."
                         } else {
                             "Execute the requested coding task and verify the result."
                         },
-                        TOOL_PROTOCOL
+                        if run.config.run_mode == RunMode::Plan {
+                            PLAN_TOOL_PROTOCOL
+                        } else {
+                            TOOL_PROTOCOL
+                        }
                     ),
                     created_at: Utc::now().to_rfc3339(),
                     run_id: None,
@@ -1448,6 +1542,19 @@ async fn run_agent(
     }
 }
 
+fn plan_tool_is_allowed(name: &str) -> bool {
+    matches!(
+        name,
+        "list_files"
+            | "read_file"
+            | "search_files"
+            | "git_status"
+            | "git_diff"
+            | "mcp_call"
+            | "ask_user"
+    )
+}
+
 async fn execute_agent_tool(
     app: &tauri::AppHandle,
     db: &Arc<Database>,
@@ -1460,12 +1567,7 @@ async fn execute_agent_tool(
     call: &ProtocolToolCall,
 ) -> Result<String, String> {
     let root_path = Path::new(root);
-    if run.config.run_mode == RunMode::Plan
-        && !matches!(
-            call.name.as_str(),
-            "list_files" | "read_file" | "search_files" | "git_status" | "git_diff" | "ask_user"
-        )
-    {
+    if run.config.run_mode == RunMode::Plan && !plan_tool_is_allowed(&call.name) {
         return Err(format!(
             "Plan mode rejected non-read-only tool `{}`",
             call.name
@@ -2571,6 +2673,26 @@ mod tests {
     }
 
     #[test]
+    fn plan_protocol_and_permission_gate_expose_only_read_only_tools_and_user_questions() {
+        for forbidden in ["write_file", "apply_patch", "delete_file", "shell"] {
+            assert!(!PLAN_TOOL_PROTOCOL.contains(&format!("- {forbidden} ")));
+            assert!(!plan_tool_is_allowed(forbidden));
+        }
+        for allowed in [
+            "list_files",
+            "read_file",
+            "search_files",
+            "git_status",
+            "git_diff",
+            "mcp_call",
+            "ask_user",
+        ] {
+            assert!(PLAN_TOOL_PROTOCOL.contains(&format!("- {allowed} ")));
+            assert!(plan_tool_is_allowed(allowed));
+        }
+    }
+
+    #[test]
     fn serializes_writable_runs_per_workspace_but_allows_read_only_browsing() {
         let (cancel, _receiver) = watch::channel(false);
         let existing = RunningRun {
@@ -2605,6 +2727,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            setup_tray(app)?;
             let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
             let db = Database::open(&app_data)?;
             migrate_secret_fields(&db)?;
@@ -2615,11 +2738,20 @@ pub fn run() {
             });
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.emit("axiom-close-requested", ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            hide_main_window,
+            quit_app,
             bootstrap,
             add_project,
             create_thread,
             get_thread,
+            save_thread_run_preferences,
             archive_thread,
             delete_thread,
             restore_context_snapshot,

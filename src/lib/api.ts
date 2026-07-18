@@ -25,6 +25,7 @@ import type {
   SearchMatch,
   ShellResult,
   ThreadDetail,
+  ThreadRunPreferences,
   ThreadSummary,
 } from "./types";
 
@@ -93,6 +94,10 @@ export async function getThread(threadId: string): Promise<ThreadDetail> {
     contextSnapshots: [],
     goals: [],
   };
+}
+
+export async function saveThreadRunPreferences(threadId: string, preferences: ThreadRunPreferences): Promise<ThreadRunPreferences> {
+  return isTauri() ? invoke("save_thread_run_preferences", { threadId, preferences }) : preferences;
 }
 
 export async function restoreContextSnapshot(snapshotId: string): Promise<void> {
@@ -419,6 +424,21 @@ function createBufferedListener(callback: (event: AgentEvent) => void): Buffered
       pending = null;
     },
   };
+}
+
+export async function onCloseRequested(callback: () => void): Promise<UnlistenFn> {
+  if (isTauri()) return listen("axiom-close-requested", () => callback());
+  const handler = () => callback();
+  window.addEventListener("axiom-close-requested", handler);
+  return () => window.removeEventListener("axiom-close-requested", handler);
+}
+
+export async function hideMainWindow(): Promise<void> {
+  if (isTauri()) await invoke("hide_main_window");
+}
+
+export async function quitApp(): Promise<void> {
+  if (isTauri()) await invoke("quit_app");
 }
 
 export async function onAgentEvent(callback: (event: AgentEvent) => void): Promise<UnlistenFn> {

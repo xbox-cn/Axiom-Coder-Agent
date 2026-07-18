@@ -2,7 +2,7 @@
 
 Axiom 是一个 **Windows 优先、本地优先、多供应商**的开源 AI Coding Agent 桌面应用。它采用项目/任务、对话执行、检查器三栏信息架构，并使用独立的 Axiom 品牌与设计令牌。
 
-> 当前版本：`1.0.2`。默认不收集遥测，不包含账号、云同步、自建云后端或插件市场。
+> 当前版本：`1.0.3`。默认不收集遥测，不包含账号、云同步、自建云后端或插件市场。
 
 ## 下载
 
@@ -16,6 +16,15 @@ Axiom 是一个 **Windows 优先、本地优先、多供应商**的开源 AI Cod
 | macOS | Apple Silicon | DMG |
 
 Windows 是当前优先支持与重点测试的平台。macOS 与 Linux 构建由 GitHub Actions 自动生成，欢迎提交兼容性问题。
+
+### Linux AppImage
+
+```bash
+chmod +x Axiom-v1.0.3-linux-x86_64.AppImage
+./Axiom-v1.0.3-linux-x86_64.AppImage
+```
+
+如果系统缺少 FUSE，可安装 `libfuse2`，或使用 `--appimage-extract-and-run`。从 `v1.0.3` 起，Axiom 在 Linux 启动 WebView 前默认禁用 WebKitGTK DMA-BUF 渲染器与加速合成路径，以兼容 KDE Wayland 等会触发启动断言的桌面环境。
 
 ## 核心能力
 

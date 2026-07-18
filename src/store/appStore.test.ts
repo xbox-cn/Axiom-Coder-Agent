@@ -15,6 +15,7 @@ vi.mock("../lib/api", () => ({
   restoreRunFileChanges: vi.fn(),
   openProjectFileExternal: vi.fn(),
   getThread: vi.fn(),
+  saveThreadRunPreferences: vi.fn(async (_threadId, preferences) => preferences),
   saveProvider: vi.fn(),
   deleteProvider: vi.fn(),
   saveMcpServer: vi.fn(),
@@ -72,9 +73,46 @@ beforeEach(() => {
   mocked.deleteMcpServer.mockResolvedValue(undefined);
   mocked.listProjectFiles.mockResolvedValue([]);
   mocked.getGitSummary.mockResolvedValue({ branch: "main", changedFiles: [], diff: "" });
+  mocked.saveThreadRunPreferences.mockImplementation(async (_threadId, preferences) => preferences);
 });
 
 describe("appStore", () => {
+  it("restores persisted per-thread run preferences", async () => {
+    const detail = threadDetail();
+    detail.runPreferences = {
+      providerId: "provider-b",
+      modelId: "model-b",
+      thinkingLevel: "high",
+      permissionMode: "full-access",
+      runMode: "goal",
+    };
+    mocked.getThread.mockResolvedValue(detail);
+
+    await useAppStore.getState().selectThread(detail.thread.id);
+
+    expect(useAppStore.getState()).toMatchObject({
+      providerId: "provider-b",
+      modelId: "model-b",
+      thinkingLevel: "high",
+      permissionMode: "full-access",
+      runMode: "goal",
+    });
+  });
+
+  it("persists composer changes in order and forces Plan read-only", async () => {
+    useAppStore.getState().setThinkingLevel("xhigh");
+    useAppStore.getState().setRunMode("plan");
+
+    await vi.waitFor(() => expect(mocked.saveThreadRunPreferences).toHaveBeenCalledTimes(2));
+    expect(mocked.saveThreadRunPreferences).toHaveBeenLastCalledWith("thread-a", {
+      providerId: "provider-a",
+      modelId: "model-a",
+      thinkingLevel: "xhigh",
+      permissionMode: "read-only",
+      runMode: "plan",
+    });
+  });
+
   it("相邻回合各自保存不可变的供应商、模型和思考配置", async () => {
     let index = 0;
     mocked.startAgentRun.mockImplementation(async (threadId, _prompt, config) => {

@@ -116,6 +116,27 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles app
+      - name: Smoke-test Linux packages
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
+          appimage="$(find "$bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          deb="$(find "$bundle/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
+          rpm_file="$(find "$bundle/rpm" -maxdepth 1 -type f -name '*.rpm' -print -quit)"
+          test -n "$appimage" && test -n "$deb" && test -n "$rpm_file"
+          chmod +x "$appimage"
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          (cd "$temp_dir" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
+          test -x "$temp_dir/squashfs-root/AppRun"
+          dpkg-deb --info "$deb" >/dev/null
+          dpkg-deb --contents "$deb" > "$temp_dir/deb-contents.txt"
+          grep -q '/usr/bin/axiom' "$temp_dir/deb-contents.txt"
+          rpm -qip "$rpm_file" >/dev/null
+          rpm -qlp "$rpm_file" > "$temp_dir/rpm-contents.txt"
+          grep -q '/usr/bin/axiom' "$temp_dir/rpm-contents.txt"
       - name: Upload installers and updater artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -176,7 +197,7 @@ jobs:
             cp "${updater}.sig" "release-files/${updater_name}.sig"
             printf '%s|%s|%s\n' "$platform" "$updater_name" "${updater_name}.sig" >> updater-map.txt
           done
-      - name: Generate latest.json
+      - name: Generate updater metadata
         shell: python
         env:
           REPOSITORY: ${{ github.repository }}
@@ -185,23 +206,48 @@ jobs:
           import datetime, json, os, pathlib
           root = pathlib.Path("release-files")
           tag = os.environ["TAG"]
-          platforms = {}
+          repository = os.environ["REPOSITORY"]
+          direct_platforms = {}
+          mirror_platforms = {}
           for line in pathlib.Path("updater-map.txt").read_text(encoding="utf-8").splitlines():
               platform, archive, signature = line.split("|", 2)
-              platforms[platform] = {
-                  "signature": (root / signature).read_text(encoding="utf-8").strip(),
-                  "url": f"https://github.com/{os.environ['REPOSITORY']}/releases/download/{tag}/{archive}",
+              direct_url = f"https://github.com/{repository}/releases/download/{tag}/{archive}"
+              signature_text = (root / signature).read_text(encoding="utf-8").strip()
+              direct_platforms[platform] = {"signature": signature_text, "url": direct_url}
+              mirror_platforms[platform] = {
+                  "signature": signature_text,
+                  "url": f"https://gh-proxy.com/{direct_url}",
               }
           expected = {"windows-x86_64", "linux-x86_64", "darwin-x86_64", "darwin-aarch64"}
-          if set(platforms) != expected:
-              raise SystemExit(f"Updater platform mismatch: {set(platforms)}")
-          payload = {
+          if set(direct_platforms) != expected:
+              raise SystemExit(f"Updater platform mismatch: {set(direct_platforms)}")
+          common = {
               "version": tag.removeprefix("v"),
-              "notes": "Fixes streamed function-call arguments and model testing; adds compact tool activity, live context usage, and collapsible reasoning.",
+              "notes": "Improves Plan mode and per-task run settings; adds tray controls, mirrored updates, default maximization, and KDE Wayland AppImage compatibility.",
               "pub_date": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
-              "platforms": platforms,
           }
-          (root / "latest.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          mirror_payload = {**common, "platforms": mirror_platforms}
+          direct_payload = {**common, "platforms": direct_platforms}
+          (root / "latest.json").write_text(json.dumps(mirror_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          (root / "latest-direct.json").write_text(json.dumps(direct_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+      - name: Validate updater metadata
+        shell: python
+        run: |
+          import json, pathlib
+          root = pathlib.Path("release-files")
+          mirror = json.loads((root / "latest.json").read_text(encoding="utf-8"))
+          direct = json.loads((root / "latest-direct.json").read_text(encoding="utf-8"))
+          if mirror["version"] != direct["version"] or set(mirror["platforms"]) != set(direct["platforms"]):
+              raise SystemExit("Updater metadata files disagree")
+          for platform in direct["platforms"]:
+              mirrored = mirror["platforms"][platform]
+              original = direct["platforms"][platform]
+              if not mirrored["url"].startswith("https://gh-proxy.com/https://github.com/"):
+                  raise SystemExit(f"Invalid mirror URL for {platform}")
+              if not original["url"].startswith("https://github.com/"):
+                  raise SystemExit(f"Invalid direct URL for {platform}")
+              if mirrored["signature"] != original["signature"]:
+                  raise SystemExit(f"Signature mismatch for {platform}")
       - name: Generate SHA-256 checksums
         working-directory: release-files
         run: find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS.txt

@@ -71,6 +71,7 @@ pub struct RunRecord {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDetail {
     pub thread: ThreadSummary,
+    pub run_preferences: Option<ThreadRunPreferences>,
     pub messages: Vec<Message>,
     pub runs: Vec<RunRecord>,
     pub context_snapshots: Vec<ContextSnapshot>,
@@ -202,6 +203,16 @@ pub struct ModelOverride {
     pub cache_price_per_million: Option<f64>,
     pub reasoning_price_per_million: Option<f64>,
     pub capabilities: Option<ModelCapabilities>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadRunPreferences {
+    pub provider_id: String,
+    pub model_id: String,
+    pub thinking_level: ThinkingLevel,
+    pub permission_mode: PermissionMode,
+    pub run_mode: RunMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,7 @@
 import { Activity, AlertTriangle, Check, CheckCircle2, CheckCheck, ChevronDown, ChevronRight, CircleCheck, CircleX, Clock3, Code2, Copy, FileText, GitBranch, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, Pause, Pencil, Pin, Play, RotateCcw, Sparkles, Square, TerminalSquare, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { ApprovalRequest, GoalRecord, Message, RunRecord, RunStatus, ToolActivity } from "../lib/types";
@@ -260,11 +261,13 @@ function ApprovalCard({ approval, onRespond }: { approval: ApprovalRequest; onRe
       if (typeof item.id !== "string" || typeof item.label !== "string") return [];
       return [{ id: item.id, label: item.label, description: typeof item.description === "string" ? item.description : "" }];
     });
-    return <div className="question-card" role="dialog" aria-live="assertive" aria-label="Plan 需要你的选择">
-      <div className="question-heading"><Sparkles size={17}/><div><strong>{approval.summary}</strong><span>选择一项，Axiom 会继续完成计划</span></div></div>
-      <div className="question-options">{options.map((option, index) => <button key={option.id} onClick={() => void respondQuestion(option.id)}><kbd>{index + 1}</kbd><span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span><ChevronRight size={15}/></button>)}</div>
-      <div className="question-other"><input value={customAnswer} onChange={(event) => setCustomAnswer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && customAnswer.trim()) void respondQuestion(customAnswer.trim()); }} placeholder="或输入其他答案"/><button disabled={!customAnswer.trim()} onClick={() => void respondQuestion(customAnswer.trim())}>提交</button></div>
-    </div>;
+    return createPortal(<div className="question-dialog-backdrop" aria-hidden="false">
+      <div className="question-card" role="dialog" aria-modal="true" aria-live="assertive" aria-label="Plan 需要你的选择">
+        <div className="question-heading"><Sparkles size={17}/><div><strong>{approval.summary}</strong><span>选择一项，Axiom 会继续完成计划</span></div></div>
+        <div className="question-options">{options.map((option, index) => <button autoFocus={index === 0} key={option.id} onClick={() => void respondQuestion(option.id)}><kbd>{index + 1}</kbd><span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span><ChevronRight size={15}/></button>)}</div>
+        <div className="question-other"><input value={customAnswer} onChange={(event) => setCustomAnswer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && customAnswer.trim()) void respondQuestion(customAnswer.trim()); }} placeholder="或输入其他答案"/><button disabled={!customAnswer.trim()} onClick={() => void respondQuestion(customAnswer.trim())}>提交</button></div>
+      </div>
+    </div>, document.body);
   }
   const argumentsText = JSON.stringify(approval.arguments, null, 2);
   return <div className="approval-card" role="alert" aria-live="assertive"><div className="approval-icon"><TerminalSquare size={18}/></div><div><strong>需要批准 {approval.toolName}</strong><code>{argumentsText}</code><p>{approval.summary}</p><small>仅允许这一次调用；敏感参数已在后端脱敏。</small></div><div className="approval-actions"><button className="ghost" onClick={() => void onRespond(false)}><RotateCcw size={14}/>拒绝</button><button className="accent" onClick={() => void onRespond(true)}><Check size={14}/>允许一次</button></div></div>;

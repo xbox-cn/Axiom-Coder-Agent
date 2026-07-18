@@ -205,7 +205,7 @@ impl StdioSession {
                 json!({
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name":"Axiom","version":"1.0.2"}
+                    "clientInfo": {"name":"Axiom","version":"1.0.3"}
                 }),
             )
             .await?;
@@ -300,7 +300,7 @@ async fn http_initialize(
         "params":{
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities":{},
-            "clientInfo":{"name":"Axiom","version":"1.0.2"}
+            "clientInfo":{"name":"Axiom","version":"1.0.3"}
         }
     });
     let (value, session) = send_http_with_session(client, config, &payload, None).await?;

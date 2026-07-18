@@ -6,6 +6,7 @@ import { Conversation } from "./components/Conversation";
 import { Inspector } from "./components/Inspector";
 import { AppModal } from "./components/AppModal";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { CloseChoiceDialog } from "./components/CloseChoiceDialog";
 import { AlertCircle, X } from "lucide-react";
 import "./App.css";
 
@@ -55,6 +56,7 @@ export default function App(){
     <Inspector/>
     <AppModal/>
     <UpdateBanner/>
+    <CloseChoiceDialog/>
     {error&&<div className="error-toast" role="alert"><AlertCircle size={17}/><span>{error}</span><button onClick={clearError} aria-label="关闭错误"><X size={16}/></button></div>}
   </div>;
 }

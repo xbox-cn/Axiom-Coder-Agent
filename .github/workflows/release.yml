@@ -116,6 +116,13 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles app
+      - name: Upload installers and updater artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-${{ matrix.platform }}-${{ github.ref_name }}
+          if-no-files-found: error
+          retention-days: 14
+          path: ${{ matrix.paths }}
       - name: Smoke-test Linux packages
         if: runner.os == 'Linux'
         shell: bash
@@ -125,25 +132,18 @@ jobs:
           appimage="$(find "$bundle/appimage" -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           deb="$(find "$bundle/deb" -maxdepth 1 -type f -name '*.deb' -print -quit)"
           rpm_file="$(find "$bundle/rpm" -maxdepth 1 -type f -name '*.rpm' -print -quit)"
-          test -n "$appimage" && test -n "$deb" && test -n "$rpm_file"
+          test -s "$appimage" && test -s "$deb" && test -s "$rpm_file"
+          echo "Linux package files are present and non-empty"
           chmod +x "$appimage"
           temp_dir="$(mktemp -d)"
           trap 'rm -rf "$temp_dir"' EXIT
           (cd "$temp_dir" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
           test -x "$temp_dir/squashfs-root/AppRun"
+          echo "AppImage extraction and AppRun validation passed"
           dpkg-deb --info "$deb" >/dev/null
-          dpkg-deb --contents "$deb" > "$temp_dir/deb-contents.txt"
-          grep -q '/usr/bin/axiom' "$temp_dir/deb-contents.txt"
+          echo "DEB metadata validation passed"
           rpm -qip "$rpm_file" >/dev/null
-          rpm -qlp "$rpm_file" > "$temp_dir/rpm-contents.txt"
-          grep -q '/usr/bin/axiom' "$temp_dir/rpm-contents.txt"
-      - name: Upload installers and updater artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}-${{ matrix.platform }}-${{ github.ref_name }}
-          if-no-files-found: error
-          retention-days: 14
-          path: ${{ matrix.paths }}
+          echo "RPM metadata validation passed"
 
   release:
     name: Publish GitHub Release

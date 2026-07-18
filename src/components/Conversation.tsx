@@ -13,6 +13,7 @@ const modeLabel = { agent: "Agent", plan: "Plan", goal: "Goal" } as const;
 type FeedItem =
   | { kind: "goal"; key: string; run: RunRecord; goal?: GoalRecord }
   | { kind: "message"; key: string; message: Message; run?: RunRecord }
+  | { kind: "reasoning"; key: string; run: RunRecord }
   | { kind: "context"; key: string; summary: string }
   | { kind: "tools"; key: string; activities: ToolActivity[] }
   | { kind: "streaming"; key: string; content: string }
@@ -45,13 +46,26 @@ export function Conversation() {
     if (!detail) return [];
     const items: FeedItem[] = [];
     if (goalRun) items.push({ kind: "goal", key: `goal-${goalRun.id}`, run: goalRun, goal: goalRecord });
+    const reasoningRunIds = new Set<string>();
     for (const message of detail.messages) {
-      items.push({ kind: "message", key: message.id, message, run: message.runId ? runs.get(message.runId) : undefined });
+      const messageRun = message.runId ? runs.get(message.runId) : undefined;
+      if (message.role === "assistant" && messageRun?.reasoningContent?.trim() && !reasoningRunIds.has(messageRun.id)) {
+        items.push({ kind: "reasoning", key: `reasoning-${messageRun.id}`, run: messageRun });
+        reasoningRunIds.add(messageRun.id);
+      }
+      items.push({ kind: "message", key: message.id, message, run: messageRun });
+    }
+    for (const run of detail.runs) {
+      if (run.reasoningContent?.trim() && !reasoningRunIds.has(run.id)) {
+        items.push({ kind: "reasoning", key: `reasoning-${run.id}`, run });
+        reasoningRunIds.add(run.id);
+      }
     }
     for (const record of contextRecords) items.push({ kind: "context", key: `context-${record.id}`, summary: record.summary });
     if (toolActivities.length > 0) items.push({ kind: "tools", key: "live-tools", activities: toolActivities });
     if (streaming) items.push({ kind: "streaming", key: "streaming", content: streaming });
-    if (statusIsRunning(detail.thread.status) && detail.thread.status !== "awaiting-approval" && !streaming) {
+    const hasLiveReasoning = detail.runs.some((run) => statusIsRunning(run.status) && Boolean(run.reasoningContent?.trim()));
+    if (statusIsRunning(detail.thread.status) && detail.thread.status !== "awaiting-approval" && !streaming && !hasLiveReasoning) {
       items.push({ kind: "thinking", key: "thinking", status: detail.thread.status });
     }
     if (pendingApproval) items.push({ kind: "approval", key: pendingApproval.id, approval: pendingApproval });
@@ -131,6 +145,7 @@ function FeedRow({ item, onOpenChanges, onRespondApproval }: { item: FeedItem; o
   switch (item.kind) {
     case "goal": return <GoalStatusCard run={item.run} goal={item.goal}/>;
     case "message": return <MessageView message={item.message} run={item.run} onOpenChanges={onOpenChanges}/>;
+    case "reasoning": return <ReasoningBlock run={item.run}/>;
     case "context": return <ContextCompressionRecord summary={item.summary}/>;
     case "tools": return <ToolActivityList activities={item.activities}/>;
     case "streaming": return <article className="message assistant streaming-message"><div className="message-body"><Markdown content={item.content}/><span className="stream-caret"/></div></article>;
@@ -155,7 +170,11 @@ function estimateFeedItemSize(item?: FeedItem) {
   if (item.kind === "starter") return 460;
   if (item.kind === "approval") return 150;
   if (item.kind === "goal") return 76;
-  if (item.kind === "tools") return Math.max(72, item.activities.length * 58);
+  if (item.kind === "tools") {
+    const expandedActivities = item.activities.filter((activity) => !isCompactToolActivity(activity));
+    return Math.max(66, 58 + expandedActivities.length * 58);
+  }
+  if (item.kind === "reasoning") return 108;
   if (item.kind === "message") return item.message.role === "user" ? 82 : 150;
   return 72;
 }
@@ -189,6 +208,18 @@ function Markdown({ content }: { content: string }) {
     code({ className, children, ...props }) { const inline = !className && !String(children).includes("\n"); return inline ? <code className="inline-code" {...props}>{children}</code> : <div className="code-block"><div className="code-toolbar"><span>{className?.replace("language-", "") || "code"}</span><button onClick={() => void navigator.clipboard.writeText(String(children))}>复制</button></div><pre><code className={className} {...props}>{children}</code></pre></div>; },
     a({ children, ...props }) { return <a {...props} target="_blank" rel="noreferrer">{children}</a>; },
   }}>{content}</ReactMarkdown>;
+}
+
+function ReasoningBlock({ run }: { run: RunRecord }) {
+  const running = statusIsRunning(run.status);
+  const [open, setOpen] = useState(running);
+  useEffect(() => {
+    if (running) setOpen(true);
+  }, [running]);
+  return <details className={`reasoning-block ${running ? "running" : "completed"}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary><Sparkles size={14}/><span><strong>{running ? "正在思考" : "思考过程"}</strong><small>{run.usage.reasoningTokens != null ? `${formatNumber(run.usage.reasoningTokens)} reasoning tokens` : "可展开查看模型推理"}</small></span><ChevronRight size={14}/></summary>
+    <div className="reasoning-content"><Markdown content={run.reasoningContent ?? ""}/></div>
+  </details>;
 }
 
 function RunMeta({ run }: { run: RunRecord }) {
@@ -238,8 +269,35 @@ function ApprovalCard({ approval, onRespond }: { approval: ApprovalRequest; onRe
   const argumentsText = JSON.stringify(approval.arguments, null, 2);
   return <div className="approval-card" role="alert" aria-live="assertive"><div className="approval-icon"><TerminalSquare size={18}/></div><div><strong>需要批准 {approval.toolName}</strong><code>{argumentsText}</code><p>{approval.summary}</p><small>仅允许这一次调用；敏感参数已在后端脱敏。</small></div><div className="approval-actions"><button className="ghost" onClick={() => void onRespond(false)}><RotateCcw size={14}/>拒绝</button><button className="accent" onClick={() => void onRespond(true)}><Check size={14}/>允许一次</button></div></div>;
 }
+const COMPACT_TOOL_NAMES = new Set(["list_files", "read_file", "search_files", "git_status", "git_diff"]);
+
+function isCompactToolActivity(activity: ToolActivity) {
+  return activity.status !== "failed" && COMPACT_TOOL_NAMES.has(activity.name);
+}
+
+function CompactToolActivityGroup({ activities }: { activities: ToolActivity[] }) {
+  const running = activities.some((activity) => activity.status === "running");
+  const [open, setOpen] = useState(running);
+  useEffect(() => {
+    if (running) setOpen(true);
+  }, [running]);
+  const completed = activities.filter((activity) => activity.status === "completed").length;
+  return <details className={`tool-activity-group ${running ? "running" : "completed"}`} open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+    <summary><span className="tool-icon"><Wrench size={14}/></span><span><strong>{running ? "正在检查代码" : `已完成 ${completed} 项代码检查`}</strong><small>{activities.map((activity) => activity.name).join(" · ")}</small></span>{running ? <LoaderCircle className="spin" size={15}/> : <CircleCheck size={15}/>}<ChevronRight size={14}/></summary>
+    <div className="tool-activity-group-rows">{activities.map((activity) => {
+      const StatusIcon = activity.status === "running" ? LoaderCircle : CircleCheck;
+      return <div className={`tool-activity-row ${activity.status}`} key={activity.id}><StatusIcon className={activity.status === "running" ? "spin" : ""} size={13}/><code>{activity.name}</code><span title={activity.summary}>{activity.summary}</span>{activity.durationMs != null && <time>{formatDuration(activity.durationMs)}</time>}</div>;
+    })}</div>
+  </details>;
+}
+
 function ToolActivityList({ activities }: { activities: ToolActivity[] }) {
-  return <div className="tool-activity-list" aria-label="工具活动">{activities.map((activity) => { const StatusIcon = activity.status === "running" ? LoaderCircle : activity.status === "completed" ? CircleCheck : CircleX; return <details className={`tool-activity ${activity.status}`} key={activity.id} open={activity.status === "running"}><summary><span className="tool-icon"><Wrench size={14}/></span><span><strong>{activity.name}</strong><small>{activity.summary}</small></span><StatusIcon className={activity.status === "running" ? "spin" : ""} size={15}/>{activity.durationMs != null && <time>{formatDuration(activity.durationMs)}</time>}</summary>{activity.output && <pre>{activity.output}</pre>}</details>; })}</div>;
+  const compact = activities.filter(isCompactToolActivity);
+  const detailed = activities.filter((activity) => !isCompactToolActivity(activity));
+  return <div className="tool-activity-list" aria-label="工具活动">
+    {compact.length > 0 ? <CompactToolActivityGroup activities={compact}/> : null}
+    {detailed.map((activity) => { const StatusIcon = activity.status === "running" ? LoaderCircle : activity.status === "completed" ? CircleCheck : CircleX; return <details className={`tool-activity ${activity.status}`} key={activity.id} open={activity.status === "running"}><summary><span className="tool-icon"><Wrench size={14}/></span><span><strong>{activity.name}</strong><small>{activity.summary}</small></span><StatusIcon className={activity.status === "running" ? "spin" : ""} size={15}/>{activity.durationMs != null && <time>{formatDuration(activity.durationMs)}</time>}</summary>{activity.output && <pre>{activity.output}</pre>}</details>; })}
+  </div>;
 }
 function ContextCompressionRecord({ summary }: { summary: string }) { return <details className="context-record"><summary><Activity size={13}/><span>上下文已透明压缩</span><ChevronRight size={13}/></summary><pre>{summary}</pre></details>; }
 function StarterState({ hasProvider }: { hasProvider: boolean }) {

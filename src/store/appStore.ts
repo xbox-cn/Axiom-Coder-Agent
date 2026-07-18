@@ -400,6 +400,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
               ...run,
               status: event.status,
               usage: event.usage ?? run.usage,
+              reasoningContent: event.kind === "reasoning-delta"
+                ? `${run.reasoningContent ?? ""}${event.content ?? ""}`
+                : run.reasoningContent,
               error: event.error ?? run.error,
               completedAt: terminalStatus(event.status) ? event.createdAt : run.completedAt,
             }

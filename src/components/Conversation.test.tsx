@@ -135,6 +135,34 @@ describe("Conversation", () => {
     await waitFor(() => expect(respond).toHaveBeenCalledWith("question-custom", "保留兼容层"));
   });
 
+  it("低风险读取工具合并为一个折叠组，失败和 Shell 保持独立", () => {
+    useAppStore.setState({
+      toolActivities: [
+        { id: "read-1", name: "read_file", status: "completed", summary: "读取 A", durationMs: 10 },
+        { id: "list-1", name: "list_files", status: "completed", summary: "列出 src", durationMs: 12 },
+        { id: "search-1", name: "search_files", status: "failed", summary: "搜索失败", output: "error" },
+        { id: "shell-1", name: "shell", status: "completed", summary: "pnpm test", output: "ok" },
+      ],
+    });
+    const { container } = render(<Conversation />);
+    expect(container.querySelectorAll(".tool-activity-group")).toHaveLength(1);
+    expect(container.querySelector(".tool-activity-group")).toHaveTextContent("已完成 2 项代码检查");
+    expect(container.querySelectorAll(".tool-activity")).toHaveLength(2);
+    expect(screen.getByLabelText("工具活动")).toHaveTextContent("search_files");
+    expect(screen.getByLabelText("工具活动")).toHaveTextContent("shell");
+  });
+
+  it("推理模型的思考过程以可折叠区块显示", () => {
+    const detail = useAppStore.getState().threadDetail!;
+    detail.runs[0] = { ...detail.runs[0], reasoningContent: "先阅读代码，再评估修复。", usage: { ...detail.runs[0].usage, reasoningTokens: 24 } };
+    useAppStore.setState({ threadDetail: { ...detail } });
+    const { container } = render(<Conversation />);
+    const block = container.querySelector(".reasoning-block");
+    expect(block).toHaveTextContent("思考过程");
+    expect(block).toHaveTextContent("先阅读代码，再评估修复。");
+    expect(block).toHaveTextContent("24 reasoning tokens");
+  });
+
   it("10,000 条消息仅渲染可视窗口", () => {
     const detail = threadDetail("idle");
     detail.messages = Array.from({ length: 10_000 }, (_, index) => ({

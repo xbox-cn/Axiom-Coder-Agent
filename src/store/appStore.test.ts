@@ -291,6 +291,17 @@ describe("appStore", () => {
     expect(updated.config).toEqual(config);
   });
 
+  it("思考增量实时追加到当前 Run", () => {
+    const detail = threadDetail("reasoning");
+    detail.runs = [runRecord("run-a", "reasoning")];
+    useAppStore.setState({ threadDetail: detail, activeRunId: "run-a" });
+
+    useAppStore.getState().handleAgentEvent(event({ sequence: 2, kind: "reasoning-delta", status: "reasoning", content: "先分析" }));
+    useAppStore.getState().handleAgentEvent(event({ sequence: 3, kind: "reasoning-delta", status: "reasoning", content: "，再实现" }));
+
+    expect(useAppStore.getState().threadDetail?.runs[0].reasoningContent).toBe("先分析，再实现");
+  });
+
   it("逐文件撤销使用最近结束回合并刷新检查器", async () => {
     const detail = threadDetail("completed");
     detail.runs = [runRecord("run-finished", "completed")];

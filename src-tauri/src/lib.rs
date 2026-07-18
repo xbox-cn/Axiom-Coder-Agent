@@ -16,7 +16,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tauri::{Emitter, Manager, State};
 use tokio::sync::{oneshot, watch};
@@ -1066,6 +1066,32 @@ async fn run_agent(
         }
         let (delta_tx, mut delta_rx) = tokio::sync::mpsc::unbounded_channel();
         let provider_messages = messages.clone();
+        let request_input_tokens = provider_messages
+            .iter()
+            .map(|message| estimate_tokens(&message.content))
+            .sum();
+        let initial_live_usage = realtime_usage_snapshot(
+            &total_usage,
+            request_input_tokens,
+            "",
+            "",
+            context_limit,
+            prior_duration_ms.saturating_add(started.elapsed().as_millis() as u64),
+        );
+        emit_agent_event(
+            &app,
+            &db,
+            &run,
+            &mut sequence,
+            AgentEventKind::Usage,
+            status,
+            None,
+            None,
+            Some(initial_live_usage),
+            None,
+            None,
+            None,
+        );
         let provider_future = provider::generate_stream(
             db.clone(),
             &run.config.provider_id,
@@ -1079,6 +1105,10 @@ async fn run_agent(
         );
         tokio::pin!(provider_future);
         let mut stream_gate = StreamingTextGate::default();
+        let mut live_output = String::new();
+        let mut live_reasoning = String::new();
+        let mut last_usage_emit = Instant::now();
+        let mut pending_usage_chars = 0usize;
         let response = loop {
             tokio::select! {
                 _ = cancel.changed() => {
@@ -1086,29 +1116,25 @@ async fn run_agent(
                     return;
                 }
                 event = delta_rx.recv() => {
-                    if let Some(provider::ProviderStreamEvent::TextDelta(delta)) = event {
-                        if run.config.run_mode != RunMode::Goal {
-                            if let Some(visible) = stream_gate.push(&delta) {
-                            emit_agent_event(
-                                &app, &db, &run, &mut sequence,
-                                AgentEventKind::TextDelta, RunStatus::Streaming,
-                                Some(visible), None, None, None, None, None,
-                            );
-                            }
-                        }
+                    if let Some(event) = event {
+                        handle_provider_stream_event(
+                            event, &app, &db, &run, &mut sequence, &mut stream_gate,
+                            &mut live_output, &mut live_reasoning, &total_usage,
+                            request_input_tokens, context_limit,
+                            prior_duration_ms.saturating_add(started.elapsed().as_millis() as u64),
+                            &mut last_usage_emit, &mut pending_usage_chars,
+                        );
                     }
                 }
                 result = &mut provider_future => {
-                    while let Ok(provider::ProviderStreamEvent::TextDelta(delta)) = delta_rx.try_recv() {
-                        if run.config.run_mode != RunMode::Goal {
-                            if let Some(visible) = stream_gate.push(&delta) {
-                            emit_agent_event(
-                                &app, &db, &run, &mut sequence,
-                                AgentEventKind::TextDelta, RunStatus::Streaming,
-                                Some(visible), None, None, None, None, None,
-                            );
-                            }
-                        }
+                    while let Ok(event) = delta_rx.try_recv() {
+                        handle_provider_stream_event(
+                            event, &app, &db, &run, &mut sequence, &mut stream_gate,
+                            &mut live_output, &mut live_reasoning, &total_usage,
+                            request_input_tokens, context_limit,
+                            prior_duration_ms.saturating_add(started.elapsed().as_millis() as u64),
+                            &mut last_usage_emit, &mut pending_usage_chars,
+                        );
                     }
                     break result;
                 }
@@ -1140,7 +1166,27 @@ async fn run_agent(
             }
         }
         accumulate_usage(&mut total_usage, &response.usage);
+        total_usage.context_tokens = response.usage.context_tokens;
         total_usage.context_limit = context_limit;
+        total_usage.cumulative_tokens = total_usage.input_tokens.unwrap_or_default()
+            + total_usage.output_tokens.unwrap_or_default()
+            + total_usage.reasoning_tokens.unwrap_or_default();
+        total_usage.duration_ms =
+            Some(prior_duration_ms.saturating_add(started.elapsed().as_millis() as u64));
+        emit_agent_event(
+            &app,
+            &db,
+            &run,
+            &mut sequence,
+            AgentEventKind::Usage,
+            RunStatus::Reasoning,
+            None,
+            None,
+            Some(total_usage.clone()),
+            None,
+            None,
+            None,
+        );
         request_index = request_index.saturating_add(1);
 
         let native_tool_call = response.tool_call.clone();
@@ -1745,6 +1791,14 @@ fn emit_agent_event(
     tool_activity: Option<ToolActivity>,
 ) {
     *sequence += 1;
+    if matches!(kind, AgentEventKind::ReasoningDelta) {
+        if let Some(delta) = content.as_deref() {
+            let _ = db.append_run_reasoning(&run.id, delta);
+        }
+    }
+    if let Some(current_usage) = usage.as_ref() {
+        let _ = db.update_run_usage(&run.id, current_usage);
+    }
     let event = AgentEvent {
         sequence: *sequence,
         run_id: run.id.clone(),
@@ -2067,13 +2121,149 @@ fn compress_context_if_needed(
     );
 }
 
+fn realtime_usage_snapshot(
+    base: &UsageRecord,
+    request_input_tokens: u64,
+    output: &str,
+    reasoning: &str,
+    context_limit: u64,
+    duration_ms: u64,
+) -> UsageRecord {
+    let output_tokens = estimate_tokens(output);
+    let reasoning_tokens = estimate_tokens(reasoning);
+    let input_tokens = base
+        .input_tokens
+        .unwrap_or_default()
+        .saturating_add(request_input_tokens);
+    let total_output = base
+        .output_tokens
+        .unwrap_or_default()
+        .saturating_add(output_tokens);
+    let total_reasoning = base
+        .reasoning_tokens
+        .unwrap_or_default()
+        .saturating_add(reasoning_tokens);
+    UsageRecord {
+        input_tokens: Some(input_tokens),
+        output_tokens: Some(total_output),
+        cached_tokens: base.cached_tokens,
+        reasoning_tokens: Some(total_reasoning),
+        context_tokens: request_input_tokens
+            .saturating_add(output_tokens)
+            .saturating_add(reasoning_tokens),
+        context_limit,
+        cumulative_tokens: input_tokens
+            .saturating_add(total_output)
+            .saturating_add(total_reasoning),
+        estimated: true,
+        duration_ms: Some(duration_ms),
+        first_token_ms: base.first_token_ms,
+        estimated_cost_usd: base.estimated_cost_usd,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_provider_stream_event(
+    event: provider::ProviderStreamEvent,
+    app: &tauri::AppHandle,
+    db: &Arc<Database>,
+    run: &RunRecord,
+    sequence: &mut u64,
+    stream_gate: &mut StreamingTextGate,
+    live_output: &mut String,
+    live_reasoning: &mut String,
+    base_usage: &UsageRecord,
+    request_input_tokens: u64,
+    context_limit: u64,
+    duration_ms: u64,
+    last_usage_emit: &mut Instant,
+    pending_usage_chars: &mut usize,
+) {
+    match event {
+        provider::ProviderStreamEvent::TextDelta(delta) => {
+            *pending_usage_chars = pending_usage_chars.saturating_add(delta.chars().count());
+            live_output.push_str(&delta);
+            if run.config.run_mode != RunMode::Goal {
+                if let Some(visible) = stream_gate.push(&delta) {
+                    emit_agent_event(
+                        app,
+                        db,
+                        run,
+                        sequence,
+                        AgentEventKind::TextDelta,
+                        RunStatus::Streaming,
+                        Some(visible),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            }
+        }
+        provider::ProviderStreamEvent::ReasoningDelta(delta) => {
+            *pending_usage_chars = pending_usage_chars.saturating_add(delta.chars().count());
+            live_reasoning.push_str(&delta);
+            emit_agent_event(
+                app,
+                db,
+                run,
+                sequence,
+                AgentEventKind::ReasoningDelta,
+                RunStatus::Reasoning,
+                Some(delta),
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
+        }
+    }
+
+    if *pending_usage_chars >= 32 || last_usage_emit.elapsed() >= Duration::from_millis(100) {
+        let usage = realtime_usage_snapshot(
+            base_usage,
+            request_input_tokens,
+            live_output,
+            live_reasoning,
+            context_limit,
+            duration_ms,
+        );
+        emit_agent_event(
+            app,
+            db,
+            run,
+            sequence,
+            AgentEventKind::Usage,
+            RunStatus::Streaming,
+            None,
+            None,
+            Some(usage),
+            None,
+            None,
+            None,
+        );
+        *last_usage_emit = Instant::now();
+        *pending_usage_chars = 0;
+    }
+}
+
 fn accumulate_usage(total: &mut UsageRecord, current: &UsageRecord) {
+    let had_usage = total.input_tokens.is_some()
+        || total.output_tokens.is_some()
+        || total.reasoning_tokens.is_some();
     add_optional(&mut total.input_tokens, current.input_tokens);
     add_optional(&mut total.output_tokens, current.output_tokens);
     add_optional(&mut total.cached_tokens, current.cached_tokens);
     add_optional(&mut total.reasoning_tokens, current.reasoning_tokens);
     total.context_limit = total.context_limit.max(current.context_limit);
-    total.estimated |= current.estimated;
+    total.estimated = if had_usage {
+        total.estimated || current.estimated
+    } else {
+        current.estimated
+    };
     if total.first_token_ms.is_none() {
         total.first_token_ms = current.first_token_ms;
     }

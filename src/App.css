@@ -565,3 +565,35 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 .update-progress i { display: block; height: 100%; background: var(--accent); transition: width 140ms ease; }
 .about-row .check-update-button { margin-left: auto; height: 32px; padding: 0 12px; font-size: 12px; }
 @media (max-width: 640px) { .update-banner { align-items: flex-start; flex-wrap: wrap; } .update-banner-actions { margin-left: 42px; } }
+
+
+/* Compact reasoning and read-only tool activity */
+.reasoning-block{margin:0 0 14px 37px;color:var(--muted)}
+.reasoning-block>summary{min-height:36px;display:flex;align-items:center;gap:8px;padding:5px 7px;border-radius:8px;cursor:pointer;list-style:none;user-select:none}
+.reasoning-block>summary::-webkit-details-marker,.tool-activity-group>summary::-webkit-details-marker{display:none}
+.reasoning-block>summary:hover{background:var(--surface-2);color:var(--text)}
+.reasoning-block>summary>svg:first-child{color:var(--accent)}
+.reasoning-block>summary>span{min-width:0;display:flex;align-items:baseline;gap:8px;flex:1}
+.reasoning-block>summary strong{font-size:12px;font-weight:600;color:var(--text)}
+.reasoning-block>summary small{font-size:11px;color:var(--faint)}
+.reasoning-block>summary>svg:last-child,.tool-activity-group>summary>svg:last-child{transition:transform 150ms ease}
+.reasoning-block[open]>summary>svg:last-child,.tool-activity-group[open]>summary>svg:last-child{transform:rotate(90deg)}
+.reasoning-content{max-height:360px;overflow:auto;margin:2px 7px 5px 13px;padding:4px 12px;border-left:1px solid var(--border);font-size:12px;line-height:1.65;color:var(--muted)}
+.reasoning-content p{margin:6px 0}
+.reasoning-content .code-block{margin:8px 0}
+.tool-activity-group{border:1px solid var(--border);border-radius:9px;background:var(--surface-2);overflow:hidden}
+.tool-activity-group>summary{min-height:40px;display:flex;align-items:center;gap:9px;padding:6px 9px;cursor:pointer;list-style:none;color:var(--muted)}
+.tool-activity-group>summary>span:nth-child(2){display:grid;gap:2px;min-width:0;flex:1}
+.tool-activity-group>summary strong{font-size:12px;font-weight:600;color:var(--text)}
+.tool-activity-group>summary small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--faint)}
+.tool-activity-group .tool-icon{width:24px;height:24px;display:grid;place-items:center;border-radius:6px;background:var(--surface-3);color:var(--accent)}
+.tool-activity-group.completed>summary>svg:nth-last-child(2){color:var(--green)}
+.tool-activity-group-rows{display:grid;border-top:1px solid var(--border);padding:4px 8px 6px}
+.tool-activity-row{min-height:28px;display:grid;grid-template-columns:16px minmax(88px,auto) minmax(0,1fr) auto;align-items:center;gap:7px;color:var(--muted);font-size:11px}
+.tool-activity-row>svg{color:var(--green)}
+.tool-activity-row.running>svg{color:var(--accent)}
+.tool-activity-row code,.tool-activity-row time{font:11px "Cascadia Code",monospace}
+.tool-activity-row code{color:var(--text)}
+.tool-activity-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-activity-row time{color:var(--faint)}
+@media(prefers-reduced-motion:reduce){.reasoning-block>summary>svg:last-child,.tool-activity-group>summary>svg:last-child{transition:none}}

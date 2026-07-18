@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { saveSettings } from "../lib/api";
 import type { FileEntry, InspectorTab } from "../lib/types";
-import { useAppStore } from "../store/appStore";
+import { statusIsRunning, useAppStore } from "../store/appStore";
 import { resolveContextLimit } from "../lib/context";
 
 const LazyDiffView = lazy(() => import("./DiffView"));
@@ -195,12 +195,16 @@ function ContextPanel(){
   const providerId=useAppStore(s=>s.providerId);
   const modelId=useAppStore(s=>s.modelId);
   const liveRecords=useAppStore(s=>s.contextRecords);
+  const activeRunId=useAppStore(s=>s.activeRunId);
   const restoreSnapshot=useAppStore(s=>s.restoreContextSnapshot);
   const [restoringId,setRestoringId]=useState<string|null>(null);
-  const latestRun=detail?.runs.at(-1);
+  const latestRun=detail?.runs.find(run=>run.id===activeRunId)??detail?.runs.at(-1);
   const latest=latestRun?.usage;
   const context=latest?.contextTokens??0;
-  const limit=Math.max(1,resolveContextLimit(providers,providerId,modelId,latestRun));
+  const contextProviderId=latestRun?.config.providerId??providerId;
+  const contextModelId=latestRun?.config.modelId??modelId;
+  const limit=Math.max(1,resolveContextLimit(providers,contextProviderId,contextModelId,latestRun));
+  const isLive=Boolean(latestRun&&statusIsRunning(latestRun.status));
   const pct=Math.min(100,Math.round(context/limit*100));
   const snapshots=detail?.contextSnapshots??[];
   const compressionCount=Math.max(liveRecords.length,snapshots.length);
@@ -215,7 +219,7 @@ function ContextPanel(){
   return <div className="context-panel">
     <div className={`context-hero ${pct>=85?"critical":pct>=75?"warning":""}`}>
       <div className="large-context-ring" style={{"--context":`${pct*3.6}deg`} as React.CSSProperties}><strong>{pct}%</strong><span>占用</span></div>
-      <div><strong>{context.toLocaleString()}</strong><span>/ {limit.toLocaleString()} tokens</span><small>{pct>=85?"下一回合将自动压缩":pct>=75?"接近上下文上限":"上下文空间充足"}</small></div>
+      <div><strong>{context.toLocaleString()}</strong><span>/ {limit.toLocaleString()} tokens</span><small>{isLive ? `${latest?.estimated ? "实时估算" : "上游实时统计"} · ` : ""}{pct>=85?"下一回合将自动压缩":pct>=75?"接近上下文上限":"上下文空间充足"}</small></div>
     </div>
     <div className="context-list">{segments.map(item=><div key={item.name}><i style={{background:item.color}}/><span>{item.name}</span><strong>{item.tokens.toLocaleString()}</strong></div>)}</div>
     <small className="context-estimate-note">分类数据为本地估算；总占用优先使用供应商 Usage。</small>

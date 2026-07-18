@@ -60,6 +60,8 @@ pub struct RunRecord {
     pub status: RunStatus,
     pub config: RunConfigSnapshot,
     pub usage: UsageRecord,
+    #[serde(default)]
+    pub reasoning_content: String,
     pub error: Option<String>,
     pub started_at: String,
     pub completed_at: Option<String>,
@@ -356,6 +358,7 @@ pub struct AgentEvent {
 pub enum AgentEventKind {
     Status,
     TextDelta,
+    ReasoningDelta,
     MessageCompleted,
     Usage,
     ToolStarted,

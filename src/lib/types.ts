@@ -18,7 +18,7 @@ export interface ProviderModel { providerId:string; modelId:string; displayName:
 export interface ProviderModelInput { modelId:string; displayName?:string|null; contextWindowTokens?:number|null; source:"upstream"|"manual" }
 export interface RunConfigSnapshot { providerId:string; modelId:string; thinkingLevel:ThinkingLevel; permissionMode:PermissionMode; runMode:RunMode; maxOutputTokens?:number|null; createdAt:string }
 export interface UsageRecord { inputTokens?:number|null; outputTokens?:number|null; cachedTokens?:number|null; reasoningTokens?:number|null; contextTokens:number; contextLimit:number; cumulativeTokens:number; estimated:boolean; durationMs?:number|null; firstTokenMs?:number|null; estimatedCostUsd?:number|null }
-export interface RunRecord { id:string; threadId:string; status:RunStatus; config:RunConfigSnapshot; usage:UsageRecord; error?:string|null; startedAt:string; completedAt?:string|null }
+export interface RunRecord { id:string; threadId:string; status:RunStatus; config:RunConfigSnapshot; usage:UsageRecord; reasoningContent?:string; error?:string|null; startedAt:string; completedAt?:string|null }
 export interface ContextSnapshot { id:string; threadId:string; runId?:string|null; summary:string; tokenCount:number; startMessageId?:string|null; endMessageId?:string|null; sourceMessageIds:string[]; active:boolean; createdAt:string }
 export interface GoalRecord { id:string; runId:string; threadId:string; status:"running"|"awaiting-approval"|"paused"|"completed"|"failed"|"blocked"; turnCount:number; startedAt:string; updatedAt:string; completedAt?:string|null }
 export interface ThreadDetail { thread:ThreadSummary; messages:Message[]; runs:RunRecord[]; contextSnapshots:ContextSnapshot[]; goals:GoalRecord[] }
@@ -31,7 +31,7 @@ export interface AppSettings { theme:"system"|"light"|"dark"; sidebarCollapsed:b
 export interface AppBootstrap { projects:Project[]; threads:ThreadSummary[]; providers:ProviderProfile[]; mcpServers:McpServerConfig[]; settings:AppSettings }
 export interface ApprovalRequest { id:string; toolName:string; summary:string; arguments:Record<string,unknown>; createdAt:string }
 export interface ToolActivity { id:string; name:string; status:"running"|"completed"|"failed"; summary:string; output?:string|null; durationMs?:number|null }
-export interface AgentEvent { sequence:number; runId:string; threadId:string; kind:"status"|"text-delta"|"message-completed"|"usage"|"tool-started"|"tool-completed"|"approval-requested"|"context-compressed"|"error"; status:RunStatus; content?:string|null; message?:Message|null; usage?:UsageRecord|null; error?:string|null; approval?:ApprovalRequest|null; toolActivity?:ToolActivity|null; createdAt:string }
+export interface AgentEvent { sequence:number; runId:string; threadId:string; kind:"status"|"text-delta"|"reasoning-delta"|"message-completed"|"usage"|"tool-started"|"tool-completed"|"approval-requested"|"context-compressed"|"error"; status:RunStatus; content?:string|null; message?:Message|null; usage?:UsageRecord|null; error?:string|null; approval?:ApprovalRequest|null; toolActivity?:ToolActivity|null; createdAt:string }
 export interface FileEntry { name:string; path:string; isDirectory:boolean; size:number }
 export interface GitFileChange { status:string; path:string }
 export interface GitSummary { branch?:string|null; changedFiles:GitFileChange[]; diff:string }

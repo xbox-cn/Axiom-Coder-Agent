@@ -37,6 +37,7 @@ pub struct ProviderToolCall {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProviderStreamEvent {
     TextDelta(String),
+    ReasoningDelta(String),
 }
 
 pub fn store_api_key(reference: &str, secret: &str) -> Result<(), String> {
@@ -287,14 +288,14 @@ pub async fn test_model_draft(
         ProviderApiType::Responses => json!({
             "model": model_id,
             "input": "Hello",
-            "stream": false,
-            "max_output_tokens": 32
+            "stream": true,
+            "max_output_tokens": 256
         }),
         ProviderApiType::ChatCompletions => json!({
             "model": model_id,
             "messages": [{"role":"user", "content":"Hello"}],
-            "stream": false,
-            "max_tokens": 32
+            "stream": true,
+            "max_tokens": 256
         }),
     };
     let started = Instant::now();
@@ -302,7 +303,7 @@ pub async fn test_model_draft(
         client
             .post(url)
             .header(CONTENT_TYPE, "application/json")
-            .header(ACCEPT, "application/json")
+            .header(ACCEPT, "application/json, text/event-stream")
             .header(ACCEPT_ENCODING, "identity")
             .json(&body),
         ProviderKind::OpenAiCompatible,
@@ -316,43 +317,164 @@ pub async fn test_model_draft(
     let bytes = response.bytes().await.map_err(|error| {
         redact_known_secret(format!("Model test response failed: {error}"), api_key)
     })?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
-        format!("The provider returned invalid JSON during the model test: {error}")
-    })?;
-    let text = match api_type {
-        ProviderApiType::Responses => {
-            let status = value
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if value.get("error").is_some()
-                || matches!(status, "failed" | "incomplete" | "cancelled")
-            {
-                return Err(redact_known_secret(
-                    provider_error(500, &json!({"response": value})),
-                    api_key,
-                ));
-            }
-            responses_json_text(&value)
-        }
-        ProviderApiType::ChatCompletions => chat_json_text(&value),
-    };
-    if text.trim().is_empty() {
-        return Err("The model test returned no text".to_string());
+    let parsed = parse_model_test_body(api_type, &bytes)
+        .map_err(|error| redact_known_secret(error, api_key))?;
+    if parsed.text.trim().is_empty() && parsed.reasoning.trim().is_empty() {
+        return Err("The model test returned no text or reasoning content".to_string());
     }
-    let usage = value.get("usage").map(|raw| {
-        let mut usage = normalize_usage(Some(raw), &text, &[]);
+    let usage = parsed.usage.as_ref().map(|raw| {
+        let mut usage = normalize_usage(Some(raw), &parsed.text, &[]);
         usage.context_limit = builtin_context_limit(model_id);
         usage.duration_ms = Some(started.elapsed().as_millis() as u64);
         usage
     });
-    let response_preview: String = text.trim().chars().take(240).collect();
+    let response_preview: String = if parsed.text.trim().is_empty() {
+        format!(
+            "服务响应成功（仅返回思考内容）：{}",
+            parsed.reasoning.trim()
+        )
+        .chars()
+        .take(240)
+        .collect()
+    } else {
+        parsed.text.trim().chars().take(240).collect()
+    };
     Ok(DraftModelTestResult {
         ok: true,
         latency_ms: started.elapsed().as_millis() as u64,
         response_preview,
         usage,
     })
+}
+
+#[derive(Debug, Default)]
+struct ParsedModelTestBody {
+    text: String,
+    reasoning: String,
+    usage: Option<Value>,
+}
+
+fn parse_model_test_body(
+    api_type: ProviderApiType,
+    body: &[u8],
+) -> Result<ParsedModelTestBody, String> {
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        return parse_model_test_values(api_type, std::iter::once(value));
+    }
+
+    let mut decoder = SseDecoder::default();
+    let mut payloads = decoder.feed(body)?;
+    payloads.extend(decoder.finish()?);
+    if payloads.is_empty() {
+        let text = std::str::from_utf8(body)
+            .map_err(|_| "The model test response was not valid UTF-8".to_string())?;
+        payloads = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with("event:"))
+            .map(|line| {
+                line.strip_prefix("data:")
+                    .unwrap_or(line)
+                    .trim()
+                    .to_string()
+            })
+            .collect();
+    }
+    let values = payloads
+        .into_iter()
+        .filter(|payload| payload != "[DONE]")
+        .map(|payload| {
+            serde_json::from_str::<Value>(&payload).map_err(|error| {
+                format!("The provider returned an invalid streaming model-test event: {error}")
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.is_empty() {
+        return Err("The model test returned an empty response body".to_string());
+    }
+    parse_model_test_values(api_type, values)
+}
+
+fn parse_model_test_values(
+    api_type: ProviderApiType,
+    values: impl IntoIterator<Item = Value>,
+) -> Result<ParsedModelTestBody, String> {
+    let mut parsed = ParsedModelTestBody::default();
+    for value in values {
+        if value.get("error").is_some() {
+            return Err(provider_error(500, &value));
+        }
+        match api_type {
+            ProviderApiType::ChatCompletions => {
+                if let Some(delta) = openai_reasoning_delta(&value) {
+                    parsed.reasoning.push_str(&delta);
+                } else if parsed.reasoning.is_empty() {
+                    parsed.reasoning.push_str(&openai_reasoning_text(&value));
+                }
+                if let Some(delta) = openai_delta(&value) {
+                    parsed.text.push_str(&delta);
+                } else if parsed.text.is_empty() {
+                    parsed.text.push_str(&chat_json_text(&value));
+                }
+                if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
+                    parsed.usage = Some(usage.clone());
+                }
+            }
+            ProviderApiType::Responses => {
+                let event_type = value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                match event_type {
+                    "response.output_text.delta" => {
+                        if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                            parsed.text.push_str(delta);
+                        }
+                    }
+                    "response.output_text.done" if parsed.text.is_empty() => {
+                        if let Some(text) = value.get("text").and_then(Value::as_str) {
+                            parsed.text.push_str(text);
+                        }
+                    }
+                    "response.reasoning_summary_text.delta"
+                    | "response.reasoning_text.delta"
+                    | "response.reasoning.delta" => {
+                        if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                            parsed.reasoning.push_str(delta);
+                        }
+                    }
+                    "response.completed" => {
+                        if let Some(response) = value.get("response") {
+                            if parsed.text.is_empty() {
+                                parsed.text.push_str(&responses_json_text(response));
+                            }
+                            if parsed.reasoning.is_empty() {
+                                parsed
+                                    .reasoning
+                                    .push_str(&responses_json_reasoning(response));
+                            }
+                            parsed.usage = response.get("usage").cloned().or(parsed.usage);
+                        }
+                    }
+                    "response.failed" | "response.incomplete" | "response.error" | "error" => {
+                        return Err(provider_error(500, &value));
+                    }
+                    _ => {
+                        if parsed.text.is_empty() {
+                            parsed.text.push_str(&responses_json_text(&value));
+                        }
+                        if parsed.reasoning.is_empty() {
+                            parsed.reasoning.push_str(&responses_json_reasoning(&value));
+                        }
+                    }
+                }
+                if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
+                    parsed.usage = Some(usage.clone());
+                }
+            }
+        }
+    }
+    Ok(parsed)
 }
 
 pub async fn discover_models(
@@ -758,6 +880,9 @@ where
             if let Some(usage) = value.get("usage").filter(|v| !v.is_null()) {
                 raw_usage = Some(usage.clone());
             }
+            if let Some(delta) = openai_reasoning_delta(&value) {
+                register_reasoning_delta(delta, on_event);
+            }
             if let Some(delta) = openai_delta(&value) {
                 register_delta(delta, &mut text, &mut first_token_ms, started, on_event);
             }
@@ -778,6 +903,9 @@ where
                 return Err("Provider blocked the response through its content filter".to_string());
             }
             tool.observe(&value);
+            if let Some(delta) = openai_reasoning_delta(&value) {
+                register_reasoning_delta(delta, on_event);
+            }
             if let Some(delta) = openai_delta(&value) {
                 register_delta(delta, &mut text, &mut first_token_ms, started, on_event);
             }
@@ -856,6 +984,26 @@ fn responses_tools(run_mode: RunMode, plan_mcp_tools: &[AllowedMcpTool]) -> Vec<
     tools
 }
 
+fn merge_tool_argument_delta(current: &mut String, incoming: &str) {
+    if incoming.is_empty() || incoming == current {
+        return;
+    }
+    let incoming_is_complete_object =
+        serde_json::from_str::<Value>(incoming).is_ok_and(|value| value.is_object());
+    let current_is_complete_object =
+        serde_json::from_str::<Value>(current).is_ok_and(|value| value.is_object());
+
+    // Compatible gateways sometimes repeat a complete cumulative arguments object in
+    // a delta event. Treat a complete object as authoritative rather than producing
+    // `{}{};` ordinary scalar/string fragments still append normally.
+    if incoming_is_complete_object {
+        current.clear();
+        current.push_str(incoming);
+    } else if !current_is_complete_object {
+        current.push_str(incoming);
+    }
+}
+
 #[derive(Debug, Default)]
 struct ChatToolAccumulator {
     call_id: String,
@@ -895,7 +1043,7 @@ impl ChatToolAccumulator {
             self.name.push_str(value);
         }
         if let Some(value) = tool.pointer("/function/arguments").and_then(Value::as_str) {
-            self.arguments.push_str(value);
+            merge_tool_argument_delta(&mut self.arguments, value);
         }
     }
 
@@ -975,7 +1123,7 @@ impl ResponsesToolAccumulator {
             }
         } else if event_type == "response.function_call_arguments.delta" {
             if let Some(delta) = event.get("delta").and_then(Value::as_str) {
-                self.arguments.push_str(delta);
+                merge_tool_argument_delta(&mut self.arguments, delta);
             }
         } else if event_type == "response.function_call_arguments.done" {
             if let Some(value) = event.get("arguments").and_then(Value::as_str) {
@@ -1039,6 +1187,10 @@ where
 
     let mut text = String::new();
     let mut first_token_ms = None;
+    let reasoning = responses_json_reasoning(&value);
+    if !reasoning.is_empty() {
+        register_reasoning_delta(reasoning, on_event);
+    }
     let output_text = responses_json_text(&value);
     if !output_text.is_empty() {
         register_delta(
@@ -1070,6 +1222,7 @@ fn observe_responses_sse_event<F>(
     key: Option<&str>,
     tool: &mut ResponsesToolAccumulator,
     text: &mut String,
+    reasoning: &mut String,
     raw_usage: &mut Option<Value>,
     first_token_ms: &mut Option<u64>,
     started: Instant,
@@ -1101,6 +1254,14 @@ where
                 }
             }
         }
+        "response.reasoning_summary_text.delta"
+        | "response.reasoning_text.delta"
+        | "response.reasoning.delta" => {
+            if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                reasoning.push_str(delta);
+                register_reasoning_delta(delta.to_string(), on_event);
+            }
+        }
         "response.completed" => {
             *raw_usage = value.pointer("/response/usage").cloned();
             if text.is_empty() {
@@ -1110,6 +1271,16 @@ where
                     .unwrap_or_default();
                 if !complete.is_empty() {
                     register_delta(complete, text, first_token_ms, started, on_event);
+                }
+            }
+            if reasoning.is_empty() {
+                let complete_reasoning = value
+                    .get("response")
+                    .map(responses_json_reasoning)
+                    .unwrap_or_default();
+                if !complete_reasoning.is_empty() {
+                    reasoning.push_str(&complete_reasoning);
+                    register_reasoning_delta(complete_reasoning, on_event);
                 }
             }
         }
@@ -1219,6 +1390,7 @@ where
 
     let mut first_token_ms = None;
     let mut text = String::new();
+    let mut reasoning = String::new();
     let mut raw_usage: Option<Value> = None;
     let mut tool = ResponsesToolAccumulator::default();
     let mut decoder = SseDecoder::default();
@@ -1228,6 +1400,7 @@ where
             key,
             &mut tool,
             &mut text,
+            &mut reasoning,
             &mut raw_usage,
             &mut first_token_ms,
             started,
@@ -1248,6 +1421,7 @@ where
                 key,
                 &mut tool,
                 &mut text,
+                &mut reasoning,
                 &mut raw_usage,
                 &mut first_token_ms,
                 started,
@@ -1261,6 +1435,7 @@ where
             key,
             &mut tool,
             &mut text,
+            &mut reasoning,
             &mut raw_usage,
             &mut first_token_ms,
             started,
@@ -1346,6 +1521,9 @@ where
             let value: Value = serde_json::from_str(&data)
                 .map_err(|e| format!("Invalid Anthropic SSE event: {e}"))?;
             merge_anthropic_usage(&mut usage, &value);
+            if let Some(delta) = value.pointer("/delta/thinking").and_then(Value::as_str) {
+                register_reasoning_delta(delta.to_string(), on_event);
+            }
             if let Some(delta) = value.pointer("/delta/text").and_then(Value::as_str) {
                 register_delta(
                     delta.to_string(),
@@ -1361,6 +1539,9 @@ where
         let value: Value =
             serde_json::from_str(&data).map_err(|e| format!("Invalid Anthropic SSE event: {e}"))?;
         merge_anthropic_usage(&mut usage, &value);
+        if let Some(delta) = value.pointer("/delta/thinking").and_then(Value::as_str) {
+            register_reasoning_delta(delta.to_string(), on_event);
+        }
         if let Some(delta) = value.pointer("/delta/text").and_then(Value::as_str) {
             register_delta(
                 delta.to_string(),
@@ -1444,6 +1625,9 @@ where
             if let Some(current) = value.get("usageMetadata") {
                 raw_usage = Some(current.clone());
             }
+            for delta in gemini_reasoning_deltas(&value) {
+                register_reasoning_delta(delta, on_event);
+            }
             for delta in gemini_deltas(&value) {
                 register_delta(delta, &mut text, &mut first_token_ms, started, on_event);
             }
@@ -1454,6 +1638,9 @@ where
             serde_json::from_str(&data).map_err(|e| format!("Invalid Gemini SSE event: {e}"))?;
         if let Some(current) = value.get("usageMetadata") {
             raw_usage = Some(current.clone());
+        }
+        for delta in gemini_reasoning_deltas(&value) {
+            register_reasoning_delta(delta, on_event);
         }
         for delta in gemini_deltas(&value) {
             register_delta(delta, &mut text, &mut first_token_ms, started, on_event);
@@ -1506,6 +1693,13 @@ where
             let value: Value = serde_json::from_str(&line)
                 .map_err(|e| format!("Invalid Ollama stream event: {e}"))?;
             if let Some(delta) = value
+                .pointer("/message/thinking")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                register_reasoning_delta(delta.to_string(), on_event);
+            }
+            if let Some(delta) = value
                 .pointer("/message/content")
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
@@ -1526,6 +1720,13 @@ where
     for line in decoder.finish()? {
         let value: Value =
             serde_json::from_str(&line).map_err(|e| format!("Invalid Ollama stream event: {e}"))?;
+        if let Some(delta) = value
+            .pointer("/message/thinking")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            register_reasoning_delta(delta.to_string(), on_event);
+        }
         if let Some(delta) = value
             .pointer("/message/content")
             .and_then(Value::as_str)
@@ -1556,6 +1757,15 @@ where
         result.usage.estimated = input.is_none() || output.is_none();
     }
     Ok(result)
+}
+
+fn register_reasoning_delta<F>(delta: String, on_event: &mut F)
+where
+    F: FnMut(ProviderStreamEvent),
+{
+    if !delta.is_empty() {
+        on_event(ProviderStreamEvent::ReasoningDelta(delta));
+    }
 }
 
 fn register_delta<F>(
@@ -1652,16 +1862,34 @@ fn responses_input_item(message: &Message) -> Result<Value, String> {
 }
 
 fn chat_json_text(response: &Value) -> String {
-    let Some(content) = response.pointer("/choices/0/message/content") else {
-        return String::new();
-    };
-    if let Some(text) = content.as_str() {
+    if let Some(text) = response
+        .pointer("/choices/0/text")
+        .or_else(|| response.get("response"))
+        .or_else(|| response.get("text"))
+        .and_then(Value::as_str)
+    {
         return text.to_string();
     }
-    content
-        .as_array()
+    response
+        .pointer("/choices/0/message/content")
+        .and_then(value_text)
+        .unwrap_or_default()
+}
+
+fn responses_json_reasoning(response: &Value) -> String {
+    response
+        .get("output")
+        .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+        .flat_map(|item| {
+            item.get("summary")
+                .or_else(|| item.get("content"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
         .filter_map(|part| {
             part.get("text")
                 .and_then(Value::as_str)
@@ -1672,7 +1900,12 @@ fn chat_json_text(response: &Value) -> String {
 }
 
 fn responses_json_text(response: &Value) -> String {
-    if let Some(text) = response.get("output_text").and_then(Value::as_str) {
+    if let Some(text) = response
+        .get("output_text")
+        .or_else(|| response.get("response"))
+        .or_else(|| response.get("text"))
+        .and_then(Value::as_str)
+    {
         return text.to_string();
     }
     response
@@ -1761,6 +1994,38 @@ fn message_content(message: &Message, responses: bool) -> Result<Value, String> 
     Ok(Value::Array(parts))
 }
 
+fn openai_reasoning_delta(value: &Value) -> Option<String> {
+    ["reasoning_content", "reasoning", "thinking"]
+        .into_iter()
+        .find_map(|field| value.pointer(&format!("/choices/0/delta/{field}")))
+        .and_then(value_text)
+        .filter(|text| !text.is_empty())
+}
+
+fn openai_reasoning_text(value: &Value) -> String {
+    ["reasoning_content", "reasoning", "thinking"]
+        .into_iter()
+        .find_map(|field| value.pointer(&format!("/choices/0/message/{field}")))
+        .and_then(value_text)
+        .unwrap_or_default()
+}
+
+fn value_text(value: &Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+    value.as_array().map(|parts| {
+        parts
+            .iter()
+            .filter_map(|part| {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .or_else(|| part.get("content").and_then(Value::as_str))
+            })
+            .collect::<String>()
+    })
+}
+
 fn openai_delta(value: &Value) -> Option<String> {
     let content = value.pointer("/choices/0/delta/content")?;
     if let Some(text) = content.as_str() {
@@ -1783,6 +2048,18 @@ fn gemini_deltas(value: &Value) -> Vec<String> {
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
+        .filter(|part| part.get("thought").and_then(Value::as_bool) != Some(true))
+        .filter_map(|part| part.get("text").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
+fn gemini_reasoning_deltas(value: &Value) -> Vec<String> {
+    value
+        .pointer("/candidates/0/content/parts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("thought").and_then(Value::as_bool) == Some(true))
         .filter_map(|part| part.get("text").and_then(Value::as_str).map(str::to_string))
         .collect()
 }
@@ -2073,6 +2350,33 @@ mod tests {
         assert_eq!(call.call_id, "call-chat");
         assert_eq!(call.name, "read_file");
         assert_eq!(call.arguments, json!({"path":"src/main.rs"}));
+    }
+
+    #[test]
+    fn chat_repeated_complete_argument_deltas_do_not_create_trailing_json() {
+        let mut accumulator = ChatToolAccumulator::default();
+        accumulator.observe(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-chat","function":{"name":"list_files","arguments":"{}"}}]}}]}));
+        accumulator.observe(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]}}]}));
+        let call = accumulator.finish().unwrap().unwrap();
+        assert_eq!(call.arguments, json!({}));
+
+        let mut cumulative = ChatToolAccumulator::default();
+        cumulative.observe(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-chat-2","function":{"name":"read_file","arguments":"{\"path\":\"README.md\"}"}}]}}]}));
+        cumulative.observe(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"README.md\"}"}}]}}]}));
+        assert_eq!(
+            cumulative.finish().unwrap().unwrap().arguments,
+            json!({"path":"README.md"})
+        );
+    }
+
+    #[test]
+    fn chat_invalid_arguments_still_fail() {
+        let mut accumulator = ChatToolAccumulator::default();
+        accumulator.observe(&json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"read_file","arguments":"{broken"}}]}}]}));
+        assert!(accumulator
+            .finish()
+            .unwrap_err()
+            .contains("invalid arguments"));
     }
 
     #[test]
@@ -2367,6 +2671,53 @@ mod tests {
             ]}]})),
             "hello"
         );
+    }
+
+    #[test]
+    fn model_test_parser_accepts_json_sse_and_reasoning_only_responses() {
+        let chat = parse_model_test_body(
+            ProviderApiType::ChatCompletions,
+            br#"{"choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+        )
+        .unwrap();
+        assert_eq!(chat.text, "hello");
+        assert!(chat.usage.is_some());
+
+        let streamed_chat = parse_model_test_body(
+            ProviderApiType::ChatCompletions,
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"hel\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\ndata: [DONE]\n\n",
+        )
+        .unwrap();
+        assert_eq!(streamed_chat.text, "hello");
+
+        let reasoning_only = parse_model_test_body(
+            ProviderApiType::ChatCompletions,
+            br#"{"choices":[{"message":{"content":null,"reasoning_content":"thinking"}}]}"#,
+        )
+        .unwrap();
+        assert!(reasoning_only.text.is_empty());
+        assert_eq!(reasoning_only.reasoning, "thinking");
+
+        let responses = parse_model_test_body(
+            ProviderApiType::Responses,
+            b"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n",
+        )
+        .unwrap();
+        assert_eq!(responses.text, "hello");
+        assert!(responses.usage.is_some());
+    }
+
+    #[test]
+    fn reasoning_extractors_keep_gemini_thoughts_out_of_answer_text() {
+        let chat = json!({"choices":[{"delta":{"reasoning_content":"step"}}]});
+        assert_eq!(openai_reasoning_delta(&chat).as_deref(), Some("step"));
+
+        let gemini = json!({"candidates":[{"content":{"parts":[
+            {"thought":true,"text":"private reasoning"},
+            {"text":"public answer"}
+        ]}}]});
+        assert_eq!(gemini_reasoning_deltas(&gemini), vec!["private reasoning"]);
+        assert_eq!(gemini_deltas(&gemini), vec!["public answer"]);
     }
 
     #[test]

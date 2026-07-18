@@ -197,7 +197,7 @@ jobs:
               raise SystemExit(f"Updater platform mismatch: {set(platforms)}")
           payload = {
               "version": tag.removeprefix("v"),
-              "notes": "Fixes message actions, Responses API, context limits, task management and terminal flashes; adds automatic updates and real model tests.",
+              "notes": "Fixes streamed function-call arguments and model testing; adds compact tool activity, live context usage, and collapsible reasoning.",
               "pub_date": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
               "platforms": platforms,
           }

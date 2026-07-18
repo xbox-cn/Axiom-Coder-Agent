@@ -78,6 +78,7 @@ impl Database {
                 status TEXT NOT NULL,
                 config_json TEXT NOT NULL,
                 usage_json TEXT NOT NULL,
+                reasoning_content TEXT NOT NULL DEFAULT '',
                 error TEXT,
                 started_at TEXT NOT NULL,
                 completed_at TEXT
@@ -203,7 +204,7 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value_json TEXT NOT NULL
             );
-            PRAGMA user_version = 6;
+            PRAGMA user_version = 7;
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -243,6 +244,7 @@ impl Database {
             ("goal_turns", "updated_at", "TEXT"),
             ("goal_turns", "completed_at", "TEXT"),
             ("threads", "archived", "INTEGER NOT NULL DEFAULT 0"),
+            ("runs", "reasoning_content", "TEXT NOT NULL DEFAULT ''"),
         ] {
             let exists = {
                 let mut statement = conn
@@ -608,7 +610,7 @@ impl Database {
         for row in msg_rows {
             messages.push(row.map_err(|e| e.to_string())?);
         }
-        let mut run_stmt = conn.prepare("SELECT id, thread_id, status, config_json, usage_json, error, started_at, completed_at FROM runs WHERE thread_id = ?1 ORDER BY started_at").map_err(|e| e.to_string())?;
+        let mut run_stmt = conn.prepare("SELECT id, thread_id, status, config_json, usage_json, reasoning_content, error, started_at, completed_at FROM runs WHERE thread_id = ?1 ORDER BY started_at").map_err(|e| e.to_string())?;
         let run_rows = run_stmt
             .query_map(params![id], |row| {
                 let config_json: String = row.get(3)?;
@@ -620,9 +622,10 @@ impl Database {
                     config: serde_json::from_str(&config_json)
                         .unwrap_or_else(|_| default_run_config()),
                     usage: serde_json::from_str(&usage_json).unwrap_or_default(),
-                    error: row.get(5)?,
-                    started_at: row.get(6)?,
-                    completed_at: row.get(7)?,
+                    reasoning_content: row.get(5)?,
+                    error: row.get(6)?,
+                    started_at: row.get(7)?,
+                    completed_at: row.get(8)?,
                 })
             })
             .map_err(|e| e.to_string())?;
@@ -736,6 +739,7 @@ impl Database {
                 estimated: true,
                 ..Default::default()
             },
+            reasoning_content: String::new(),
             error: None,
             started_at: Utc::now().to_rfc3339(),
             completed_at: None,
@@ -755,7 +759,7 @@ impl Database {
     pub fn get_run(&self, run_id: &str) -> Result<RunRecord, String> {
         let conn = self.conn.lock();
         conn.query_row(
-            "SELECT id, thread_id, status, config_json, usage_json, error, started_at, completed_at FROM runs WHERE id=?1",
+            "SELECT id, thread_id, status, config_json, usage_json, reasoning_content, error, started_at, completed_at FROM runs WHERE id=?1",
             params![run_id],
             |row| {
                 let config_json: String = row.get(3)?;
@@ -767,9 +771,10 @@ impl Database {
                     config: serde_json::from_str(&config_json)
                         .unwrap_or_else(|_| default_run_config()),
                     usage: serde_json::from_str(&usage_json).unwrap_or_default(),
-                    error: row.get(5)?,
-                    started_at: row.get(6)?,
-                    completed_at: row.get(7)?,
+                    reasoning_content: row.get(5)?,
+                    error: row.get(6)?,
+                    started_at: row.get(7)?,
+                    completed_at: row.get(8)?,
                 })
             },
         )
@@ -791,7 +796,8 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let mut conn = self.conn.lock();
         let transaction = conn.transaction().map_err(|error| error.to_string())?;
-        let (thread_id, config_json, usage_json, started_at, goal_status): (
+        let (thread_id, config_json, usage_json, reasoning_content, started_at, goal_status): (
+            String,
             String,
             String,
             String,
@@ -799,9 +805,9 @@ impl Database {
             String,
         ) = transaction
             .query_row(
-                "SELECT r.thread_id, r.config_json, r.usage_json, r.started_at, g.status FROM runs r JOIN goals g ON g.run_id=r.id WHERE r.id=?1",
+                "SELECT r.thread_id, r.config_json, r.usage_json, r.reasoning_content, r.started_at, g.status FROM runs r JOIN goals g ON g.run_id=r.id WHERE r.id=?1",
                 params![run_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             )
             .map_err(|_| "Goal does not exist".to_string())?;
         let config: RunConfigSnapshot =
@@ -838,6 +844,7 @@ impl Database {
             status: RunStatus::Queued,
             config,
             usage,
+            reasoning_content,
             error: None,
             started_at,
             completed_at: None,
@@ -966,6 +973,32 @@ impl Database {
             params![thread_id, status_text, now],
         )
         .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn update_run_usage(&self, run_id: &str, usage: &UsageRecord) -> Result<(), String> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE runs SET usage_json=?2 WHERE id=?1",
+            params![
+                run_id,
+                serde_json::to_string(usage).map_err(|error| error.to_string())?
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn append_run_reasoning(&self, run_id: &str, delta: &str) -> Result<(), String> {
+        if delta.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE runs SET reasoning_content=reasoning_content || ?2 WHERE id=?1",
+            params![run_id, delta],
+        )
+        .map_err(|error| error.to_string())?;
         Ok(())
     }
 

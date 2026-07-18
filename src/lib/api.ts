@@ -40,9 +40,9 @@ export async function getBootstrap(): Promise<AppBootstrap> {
   return isTauri() ? invoke("bootstrap") : structuredClone(demoBootstrap);
 }
 
-export async function pickProjectDirectory(): Promise<string | null> {
-  if (!isTauri()) return "D:\\Projects\\new-project";
-  const result = await open({ directory: true, multiple: false, title: "选择 Axiom 项目文件夹" });
+export async function pickProjectDirectory(title = "\u9009\u62e9 Axiom \u9879\u76ee\u6587\u4ef6\u5939"): Promise<string | null> {
+  if (!isTauri()) return title.includes("\u4fdd\u5b58") ? "D:\\Projects" : "D:\\Projects\\new-project";
+  const result = await open({ directory: true, multiple: false, title });
   return typeof result === "string" ? result : null;
 }
 
@@ -58,6 +58,12 @@ export async function addProject(path: string): Promise<Project> {
     updatedAt: now,
     gitBranch: "main",
   };
+}
+
+export async function createProjectDirectory(parentPath: string, name: string): Promise<Project> {
+  if (isTauri()) return invoke("create_project_directory", { parentPath, name });
+  const separator = /[\\/]$/.test(parentPath) ? "" : parentPath.includes("\\") ? "\\" : "/";
+  return addProject(`${parentPath}${separator}${name.trim()}`);
 }
 
 export async function createThread(projectId: string, title?: string): Promise<ThreadSummary> {

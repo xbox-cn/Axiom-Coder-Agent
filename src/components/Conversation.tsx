@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, Check, CheckCircle2, CheckCheck, ChevronDown, ChevronRight, CircleCheck, CircleX, Clock3, Code2, Copy, FileText, GitBranch, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, Pause, Pencil, Pin, Play, RotateCcw, Sparkles, Square, TerminalSquare, Wrench } from "lucide-react";
+import { Activity, AlertTriangle, Check, CheckCircle2, CheckCheck, ChevronDown, ChevronRight, CircleCheck, CircleX, Clock3, Code2, Copy, FileText, FolderOpen, FolderPlus, GitBranch, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, Pause, Pencil, Pin, Play, RotateCcw, Sparkles, Square, TerminalSquare, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { createPortal } from "react-dom";
@@ -12,7 +12,6 @@ const statusLabel: Record<RunStatus, string> = { idle: "空闲", queued: "排队
 const modeLabel = { agent: "Agent", plan: "Plan", goal: "Goal" } as const;
 
 type FeedItem =
-  | { kind: "goal"; key: string; run: RunRecord; goal?: GoalRecord }
   | { kind: "message"; key: string; message: Message; run?: RunRecord }
   | { kind: "reasoning"; key: string; run: RunRecord }
   | { kind: "context"; key: string; summary: string }
@@ -25,6 +24,8 @@ type FeedItem =
 export function Conversation() {
   const detail = useAppStore((state) => state.threadDetail);
   const data = useAppStore((state) => state.bootstrapData);
+  const addProject = useAppStore((state) => state.addProject);
+  const setModal = useAppStore((state) => state.setModal);
   const streaming = useAppStore((state) => state.streamingContent);
   const setInspectorTab = useAppStore((state) => state.setInspectorTab);
   const inspectorOpen = useAppStore((state) => state.inspectorOpen);
@@ -46,7 +47,6 @@ export function Conversation() {
   const feedItems = useMemo<FeedItem[]>(() => {
     if (!detail) return [];
     const items: FeedItem[] = [];
-    if (goalRun) items.push({ kind: "goal", key: `goal-${goalRun.id}`, run: goalRun, goal: goalRecord });
     const reasoningRunIds = new Set<string>();
     for (const message of detail.messages) {
       const messageRun = message.runId ? runs.get(message.runId) : undefined;
@@ -74,7 +74,7 @@ export function Conversation() {
       items.push({ kind: "starter", key: "starter", hasProvider: Boolean(data?.providers.length) });
     }
     return items;
-  }, [contextRecords, data?.providers.length, detail, goalRecord, goalRun, pendingApproval, runs, streaming, toolActivities]);
+  }, [contextRecords, data?.providers.length, detail, pendingApproval, runs, streaming, toolActivities]);
 
   const rowVirtualizer = useVirtualizer({
     count: feedItems.length,
@@ -102,7 +102,19 @@ export function Conversation() {
   }, [feedItems.length, streaming]);
 
   if (!detail) {
-    return <main className="conversation empty-conversation"><div className="empty-hero"><div className="axiom-mark hero"><i/><i/><i/></div><h1>让 Axiom 在你的代码中工作</h1><p>打开一个本地项目，创建任务，然后添加供应商与模型。</p></div><Composer disabled/></main>;
+    return <main className="conversation empty-conversation">
+      <div className="empty-hero">
+        <div className="axiom-mark hero"><i/><i/><i/></div>
+        <h1>开始一个编程任务</h1>
+        <p>打开已有代码目录，或创建一个新的本地项目文件夹。</p>
+        <div className="empty-hero-actions">
+          <button className="empty-hero-primary" onClick={() => void addProject()}><FolderOpen size={17}/>打开已有项目</button>
+          <button className="empty-hero-secondary" onClick={() => setModal("create-project")}><FolderPlus size={17}/>创建新项目</button>
+        </div>
+        <small>项目和对话只保存在本机；仅你配置的供应商会收到请求。</small>
+      </div>
+      <Composer disabled/>
+    </main>;
   }
 
   return <main className="conversation">
@@ -138,13 +150,12 @@ export function Conversation() {
         </div>
       </div>
     </div>
-    <Composer/>
+    <Composer topSlot={goalRun ? <GoalStatusCard run={goalRun} goal={goalRecord}/> : null}/>
   </main>;
 }
 
 function FeedRow({ item, onOpenChanges, onRespondApproval }: { item: FeedItem; onOpenChanges: () => void; onRespondApproval: (approved: boolean) => Promise<void> }) {
   switch (item.kind) {
-    case "goal": return <GoalStatusCard run={item.run} goal={item.goal}/>;
     case "message": return <MessageView message={item.message} run={item.run} onOpenChanges={onOpenChanges}/>;
     case "reasoning": return <ReasoningBlock run={item.run}/>;
     case "context": return <ContextCompressionRecord summary={item.summary}/>;
@@ -170,7 +181,6 @@ function estimateFeedItemSize(item?: FeedItem) {
   if (!item) return 96;
   if (item.kind === "starter") return 460;
   if (item.kind === "approval") return 150;
-  if (item.kind === "goal") return 76;
   if (item.kind === "tools") {
     const expandedActivities = item.activities.filter((activity) => !isCompactToolActivity(activity));
     return Math.max(66, 58 + expandedActivities.length * 58);

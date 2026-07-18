@@ -116,6 +116,56 @@ fn add_project(state: State<'_, AppState>, path: String) -> Result<Project, Stri
     state.db.add_project(Path::new(&path))
 }
 
+fn validate_project_folder_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("请输入项目名称".to_string());
+    }
+    if name
+        .chars()
+        .any(|character| character.is_control() || matches!(character, '/' | '\\'))
+    {
+        return Err("项目名称不能包含控制字符或路径分隔符".to_string());
+    }
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err("项目名称不能包含相对路径".to_string());
+    }
+    Ok(name.to_string())
+}
+
+#[tauri::command]
+fn create_project_directory(
+    state: State<'_, AppState>,
+    parent_path: String,
+    name: String,
+) -> Result<Project, String> {
+    let name = validate_project_folder_name(&name)?;
+    let parent = Path::new(&parent_path)
+        .canonicalize()
+        .map_err(|error| format!("无法打开项目保存位置: {error}"))?;
+    if !parent.is_dir() {
+        return Err("项目保存位置必须是目录".to_string());
+    }
+    let target = parent.join(&name);
+    fs::create_dir(&target).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            format!("目标文件夹已存在：{}", target.display())
+        } else {
+            format!("无法创建项目文件夹：{error}")
+        }
+    })?;
+    match state.db.add_project(&target) {
+        Ok(project) => Ok(project),
+        Err(error) => {
+            let _ = fs::remove_dir(&target);
+            Err(error)
+        }
+    }
+}
+
 #[tauri::command]
 fn create_thread(
     state: State<'_, AppState>,
@@ -2484,6 +2534,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn project_folder_name_rejects_paths_and_accepts_single_names() {
+        assert_eq!(
+            validate_project_folder_name("  axiom-demo  ").unwrap(),
+            "axiom-demo"
+        );
+        for invalid in ["", ".", "..", "nested/project", r"nested\project"] {
+            assert!(validate_project_folder_name(invalid).is_err(), "{invalid}");
+        }
+    }
+
     fn utf16_bytes(value: &str, little_endian: bool, include_bom: bool) -> Vec<u8> {
         let mut bytes = if include_bom {
             if little_endian {
@@ -2749,6 +2810,7 @@ pub fn run() {
             quit_app,
             bootstrap,
             add_project,
+            create_project_directory,
             create_thread,
             get_thread,
             save_thread_run_preferences,

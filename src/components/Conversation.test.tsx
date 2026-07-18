@@ -51,6 +51,30 @@ beforeEach(() => {
 });
 
 describe("Conversation", () => {
+  it("renders the Goal status above the composer instead of in the message feed", () => {
+    const detail = threadDetail("reasoning");
+    const goalRun = runRecord("goal-live", "reasoning", { ...runConfig("provider-a", "model-a"), runMode: "goal" });
+    detail.runs = [goalRun];
+    detail.goals = [{
+      id: "goal-live", runId: goalRun.id, threadId: detail.thread.id, status: "running", turnCount: 3,
+      startedAt: goalRun.startedAt, updatedAt: goalRun.startedAt, completedAt: null,
+    }];
+    useAppStore.setState({ threadDetail: detail, pendingApproval: null, toolActivities: [], contextRecords: [] });
+
+    const { container } = render(<Conversation />);
+    const goal = container.querySelector(".goal-status-card");
+    expect(goal).toHaveTextContent("Goal");
+    expect(goal?.closest(".composer-wrap")).not.toBeNull();
+    expect(goal?.closest(".virtual-feed")).toBeNull();
+  });
+
+  it("shows open and create project actions on the startup screen", () => {
+    useAppStore.setState({ threadDetail: null, activeThreadId: null, activeProjectId: null, pendingApproval: null });
+    render(<Conversation />);
+    expect(screen.getByRole("button", { name: /打开已有项目/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /创建新项目/ }));
+    expect(useAppStore.getState().modal).toBe("create-project");
+  });
   it("明确区分准确和估算 Usage，并展开完整指标", () => {
     render(<Conversation />);
     expect(screen.getByText("准确")).toBeInTheDocument();

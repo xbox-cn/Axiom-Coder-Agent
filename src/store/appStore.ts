@@ -23,7 +23,7 @@ import type {
   ToolActivity,
 } from "../lib/types";
 
-type ModalName = "providers" | "mcp" | "settings" | "search" | null;
+type ModalName = "providers" | "mcp" | "settings" | "search" | "create-project" | null;
 interface ContextRecord { id: string; summary: string; createdAt: string }
 
 interface AppStore {
@@ -64,6 +64,7 @@ interface AppStore {
   initialize: () => Promise<void>;
   selectThread: (id: string) => Promise<void>;
   addProject: () => Promise<void>;
+  createProject: (name: string, parentPath: string) => Promise<boolean>;
   createThread: () => Promise<void>;
   archiveThread: (id: string, archived: boolean) => Promise<void>;
   deleteThread: (id: string) => Promise<void>;
@@ -274,6 +275,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
       await get().selectThread(thread.id);
     } catch (error) {
       set({ error: String(error) });
+    }
+  },
+
+  createProject: async (name, parentPath) => {
+    try {
+      const project = await api.createProjectDirectory(parentPath, name);
+      const thread = await api.createThread(project.id, "\u65b0\u4efb\u52a1");
+      set((state) => ({
+        bootstrapData: state.bootstrapData
+          ? {
+              ...state.bootstrapData,
+              projects: [project, ...state.bootstrapData.projects.filter((item) => item.id !== project.id)],
+              threads: [thread, ...state.bootstrapData.threads],
+            }
+          : state.bootstrapData,
+        activeProjectId: project.id,
+      }));
+      await get().selectThread(thread.id);
+      return true;
+    } catch (error) {
+      set({ error: String(error) });
+      return false;
     }
   },
 

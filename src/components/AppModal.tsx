@@ -5,6 +5,8 @@ import {
   Download,
   Eye,
   EyeOff,
+  FolderOpen,
+  FolderPlus,
   LoaderCircle,
   Monitor,
   Moon,
@@ -19,7 +21,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { discoverProviderModelsDraft, saveSettings, testMcpServer, testProviderModelDraft } from "../lib/api";
+import { discoverProviderModelsDraft, pickProjectDirectory, saveSettings, testMcpServer, testProviderModelDraft } from "../lib/api";
 import type {
   DraftModelTestResult,
   McpServerConfig,
@@ -62,6 +64,8 @@ export function AppModal() {
           <McpModal />
         ) : modal === "settings" ? (
           <SettingsModal />
+        ) : modal === "create-project" ? (
+          <CreateProjectModal />
         ) : (
           <SearchModal />
         )}
@@ -75,6 +79,7 @@ const modalTitle = {
   mcp: "MCP 服务",
   settings: "设置",
   search: "全局搜索",
+  "create-project": "创建项目",
 };
 
 function ModalHeader({ icon: Icon, title, subtitle }: { icon: LucideIcon; title: string; subtitle: string }) {
@@ -332,6 +337,61 @@ function newMcp(projectId: string | null): McpServerConfig {
   return { id: "", name: "新 MCP 服务", scope: "global", projectId, transport: "stdio", command: "npx", args: [], cwd: null, url: null, env: {}, headers: {}, timeoutSeconds: 30, enabled: true, status: "stopped", lastError: null, discoveredTools: [], disabledTools: [], readOnlyTools: [], updatedAt: new Date().toISOString() };
 }
 
+function CreateProjectModal() {
+  const createProject = useAppStore((state) => state.createProject);
+  const close = useAppStore((state) => state.setModal);
+  const [name, setName] = useState("");
+  const [parentPath, setParentPath] = useState("");
+  const [choosing, setChoosing] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const projectName = name.trim();
+  const targetPath = parentPath && projectName
+    ? `${parentPath}${/[\\/]$/.test(parentPath) ? "" : parentPath.includes("\\") ? "\\" : "/"}${projectName}`
+    : "";
+
+  const chooseLocation = async () => {
+    setChoosing(true);
+    try {
+      const path = await pickProjectDirectory("选择新项目保存位置");
+      if (path) setParentPath(path);
+    } finally {
+      setChoosing(false);
+    }
+  };
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!projectName || !parentPath || creating) return;
+    setCreating(true);
+    const created = await createProject(projectName, parentPath);
+    setCreating(false);
+    if (created) close(null);
+  };
+
+  return <>
+    <ModalHeader icon={FolderPlus} title="创建新项目" subtitle="Axiom 会创建一个本地文件夹，并立即开始第一个任务。" />
+    <form className="create-project-form" onSubmit={(event) => void submit(event)}>
+      <label className="create-project-field">
+        <span>项目名称</span>
+        <input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="my-project" disabled={creating} />
+        <small>将同时作为新文件夹的名称</small>
+      </label>
+      <div className="create-project-field">
+        <span>保存位置</span>
+        <button className="project-location-picker" type="button" onClick={() => void chooseLocation()} disabled={choosing || creating}>
+          <FolderOpen size={17}/><span title={parentPath}>{parentPath || "选择父文件夹"}</span><strong>{choosing ? "正在打开…" : "选择"}</strong>
+        </button>
+      </div>
+      <div className={`project-path-preview ${targetPath ? "ready" : ""}`}>
+        <span>项目路径</span><code>{targetPath || "选择位置后将在这里预览完整路径"}</code>
+      </div>
+      <div className="create-project-actions">
+        <button type="button" className="secondary" onClick={() => close(null)} disabled={creating}>取消</button>
+        <button type="submit" className="primary" disabled={!projectName || !parentPath || creating}>{creating ? <><LoaderCircle className="spin" size={15}/>正在创建</> : <><Plus size={15}/>创建项目</>}</button>
+      </div>
+    </form>
+  </>;
+}
+
 function SettingsModal() {
   const settings = useAppStore((state) => state.bootstrapData?.settings);
   if (!settings) return null;
@@ -341,7 +401,7 @@ function SettingsModal() {
     useAppStore.setState((state) => ({ bootstrapData: state.bootstrapData ? { ...state.bootstrapData, settings: next } : null }));
     document.documentElement.dataset.theme = theme;
   };
-  return <><ModalHeader icon={Monitor} title="设置" subtitle="Axiom 默认不发送遥测，诊断数据仅保存在本机。" /><div className="simple-settings"><section><h3>外观</h3><div className="theme-picker"><button className={settings.theme === "system" ? "active" : ""} onClick={() => void update("system")}><Monitor size={18} /><span>跟随系统</span></button><button className={settings.theme === "light" ? "active" : ""} onClick={() => void update("light")}><Sun size={18} /><span>浅色</span></button><button className={settings.theme === "dark" ? "active" : ""} onClick={() => void update("dark")}><Moon size={18} /><span>深色</span></button></div></section><section><h3>隐私</h3><div className="privacy-card"><Cloud size={18} /><div><strong>完全本地的数据层</strong><p>项目、对话、运行事件和配置保存在本机 SQLite。只有你配置的供应商和远程 MCP 会产生网络请求。</p></div><span className="local-badge">LOCAL</span></div></section><section><h3>关于</h3><div className="about-row"><div className="axiom-mark"><i /><i /><i /></div><div><strong>Axiom 1.0.3</strong><span>Apache-2.0 · Windows 优先</span></div><button className="secondary check-update-button" onClick={() => window.dispatchEvent(new Event("axiom-check-update"))}>检查更新</button></div></section></div></>;
+  return <><ModalHeader icon={Monitor} title="设置" subtitle="Axiom 默认不发送遥测，诊断数据仅保存在本机。" /><div className="simple-settings"><section><h3>外观</h3><div className="theme-picker"><button className={settings.theme === "system" ? "active" : ""} onClick={() => void update("system")}><Monitor size={18} /><span>跟随系统</span></button><button className={settings.theme === "light" ? "active" : ""} onClick={() => void update("light")}><Sun size={18} /><span>浅色</span></button><button className={settings.theme === "dark" ? "active" : ""} onClick={() => void update("dark")}><Moon size={18} /><span>深色</span></button></div></section><section><h3>隐私</h3><div className="privacy-card"><Cloud size={18} /><div><strong>完全本地的数据层</strong><p>项目、对话、运行事件和配置保存在本机 SQLite。只有你配置的供应商和远程 MCP 会产生网络请求。</p></div><span className="local-badge">LOCAL</span></div></section><section><h3>关于</h3><div className="about-row"><div className="axiom-mark"><i /><i /><i /></div><div><strong>Axiom 1.0.4</strong><span>Apache-2.0 · Windows 优先</span></div><button className="secondary check-update-button" onClick={() => window.dispatchEvent(new Event("axiom-check-update"))}>检查更新</button></div></section></div></>;
 }
 
 function SearchModal() {

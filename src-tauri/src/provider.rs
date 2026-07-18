@@ -95,6 +95,36 @@ fn client(profile: &ProviderProfile) -> Result<Client, String> {
         .map_err(|e| format!("Could not create HTTP client: {e}"))
 }
 
+const PROVIDER_REQUEST_RETRIES: usize = 5;
+const PROVIDER_RETRY_STEP_SECONDS: u64 = 5;
+
+fn provider_retry_delay(retry_number: usize) -> Duration {
+    Duration::from_secs(PROVIDER_RETRY_STEP_SECONDS * retry_number as u64)
+}
+
+/// Retry only transport-level failures that happen before an HTTP response is
+/// available. HTTP status errors keep their existing behavior and are never
+/// retried silently.
+async fn send_provider_request_with_retry(request: RequestBuilder) -> Result<Response, String> {
+    for attempt in 0..=PROVIDER_REQUEST_RETRIES {
+        let current = request.try_clone().ok_or_else(|| {
+            "Provider request failed: request body could not be retried".to_string()
+        })?;
+        match current.send().await {
+            Ok(response) => return Ok(response),
+            Err(_error) if attempt < PROVIDER_REQUEST_RETRIES => {
+                tokio::time::sleep(provider_retry_delay(attempt + 1)).await;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Provider request failed: {error} (retried {PROVIDER_REQUEST_RETRIES} times)"
+                ));
+            }
+        }
+    }
+    unreachable!("provider request retry loop always returns")
+}
+
 fn provider_endpoint(base_url: &str, endpoint: &str) -> Result<String, String> {
     let mut base = base_url.trim().trim_end_matches('/').to_string();
     if base.is_empty() {
@@ -840,10 +870,7 @@ where
         ),
         profile,
     )?;
-    let response = request
-        .send()
-        .await
-        .map_err(|e| format!("Provider request failed: {e}"))?;
+    let response = send_provider_request_with_retry(request).await?;
     let mut response = checked_response(response, key).await?;
     let stream_metadata = StreamMetadata::from_response(&response);
     let started = Instant::now();
@@ -1336,10 +1363,7 @@ where
         ),
         profile,
     )?;
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("Provider request failed: {error}"))?;
+    let response = send_provider_request_with_retry(request).await?;
     let mut response = checked_response_for_api(response, key, true).await?;
     let stream_metadata = StreamMetadata::from_response(&response);
     let is_json = response
@@ -2281,6 +2305,13 @@ impl NdjsonDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_retry_backoff_increases_by_five_seconds() {
+        assert_eq!(provider_retry_delay(1), Duration::from_secs(5));
+        assert_eq!(provider_retry_delay(2), Duration::from_secs(10));
+        assert_eq!(provider_retry_delay(5), Duration::from_secs(25));
+    }
 
     #[test]
     fn sse_decoder_handles_split_chunks_and_multiline_events() {

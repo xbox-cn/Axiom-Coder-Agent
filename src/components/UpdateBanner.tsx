@@ -78,7 +78,7 @@ export function UpdateBanner() {
     <div className="update-banner-icon">{state.kind === "available" ? <Download size={16}/> : state.kind === "ready" ? <RotateCcw size={16}/> : <RefreshCw className={state.kind === "checking" || state.kind === "downloading" ? "spin" : ""} size={16}/>}</div>
     <div className="update-banner-copy">
       {state.kind === "checking" && <><strong>正在检查更新</strong><span>正在连接 GitHub Releases…</span></>}
-      {state.kind === "current" && <><strong>已是最新版本</strong><span>Axiom 1.0.3</span></>}
+      {state.kind === "current" && <><strong>已是最新版本</strong><span>Axiom 1.0.4</span></>}
       {state.kind === "available" && <><strong>发现 Axiom {state.update.version}</strong><span>{state.update.body?.trim() || "新版本已可下载。"}</span></>}
       {state.kind === "downloading" && <><strong>正在下载 Axiom {state.update.version}</strong><span>{state.progress == null ? "正在接收更新包…" : String(state.progress) + "%"}</span></>}
       {state.kind === "ready" && <><strong>更新已安装</strong><span>重启 Axiom 以使用 {state.update.version}。</span></>}

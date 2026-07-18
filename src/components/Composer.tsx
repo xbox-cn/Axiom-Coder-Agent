@@ -1,5 +1,5 @@
 import { ArrowUp, BrainCircuit, CircleStop, FileText, Gauge, Goal, Paperclip, Shield, Sparkles, X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { onAttachmentDrop } from "../lib/api";
 import { resolveContextLimit } from "../lib/context";
 import type { PermissionMode, RunMode, ThinkingLevel } from "../lib/types";
@@ -21,7 +21,7 @@ const thinkingOptions: DropdownOption<ThinkingLevel>[] = [
   { value: "high", label: "高" }, { value: "xhigh", label: "极高" }, { value: "auto", label: "自动" },
 ];
 
-export function Composer({ disabled = false }: { disabled?: boolean }) {
+export function Composer({ disabled = false, topSlot }: { disabled?: boolean; topSlot?: ReactNode }) {
   const draft = useAppStore((state) => state.draft);
   const setDraft = useAppStore((state) => state.setDraft);
   const send = useAppStore((state) => state.send);
@@ -105,6 +105,7 @@ export function Composer({ disabled = false }: { disabled?: boolean }) {
   };
 
   return <div className="composer-wrap">
+    {topSlot ? <div className="composer-top-slot">{topSlot}</div> : null}
     <div className={`composer ${running ? "locked" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
       <div className="composer-input-area">
         <textarea ref={textarea} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKeyDown} disabled={disabled} rows={1} placeholder={disabled ? "打开项目后即可开始" : "描述任务，使用 @ 引用文件…"}/>

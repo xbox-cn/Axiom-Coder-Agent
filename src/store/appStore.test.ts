@@ -5,6 +5,8 @@ import { bootstrap, mcpServer, provider, runConfig, runRecord, threadDetail, usa
 import type { AgentEvent, RunConfigSnapshot } from "../lib/types";
 
 vi.mock("../lib/api", () => ({
+  createProjectDirectory: vi.fn(),
+  createThread: vi.fn(),
   startAgentRun: vi.fn(),
   cancelAgentRun: vi.fn(),
   resumeGoal: vi.fn(),
@@ -77,6 +79,30 @@ beforeEach(() => {
 });
 
 describe("appStore", () => {
+  it("creates a project directory and opens its first task", async () => {
+    const project = {
+      id: "project-new", name: "demo-project", path: "D:\\Projects\\demo-project", favorite: false,
+      createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z", gitBranch: null,
+    };
+    const thread = {
+      id: "thread-new", projectId: project.id, title: "新任务", status: "idle" as const,
+      createdAt: project.createdAt, updatedAt: project.updatedAt, unreadApproval: false, archived: false,
+    };
+    const detail = threadDetail();
+    detail.thread = thread;
+    mocked.createProjectDirectory.mockResolvedValue(project);
+    mocked.createThread.mockResolvedValue(thread);
+    mocked.getThread.mockResolvedValue(detail);
+
+    const created = await useAppStore.getState().createProject("demo-project", "D:\\Projects");
+
+    expect(created).toBe(true);
+    expect(mocked.createProjectDirectory).toHaveBeenCalledWith("D:\\Projects", "demo-project");
+    expect(mocked.createThread).toHaveBeenCalledWith(project.id, "新任务");
+    expect(useAppStore.getState().activeProjectId).toBe(project.id);
+    expect(useAppStore.getState().activeThreadId).toBe(thread.id);
+    expect(useAppStore.getState().bootstrapData?.projects[0]).toEqual(project);
+  });
   it("restores persisted per-thread run preferences", async () => {
     const detail = threadDetail();
     detail.runPreferences = {

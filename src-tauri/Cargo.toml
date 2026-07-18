@@ -1,6 +1,6 @@
 [package]
 name = "axiom"
-version = "1.0.3"
+version = "1.0.4"
 description = "Local-first multi-provider AI coding agent desktop app"
 authors = ["Axiom Contributors"]
 edition = "2021"

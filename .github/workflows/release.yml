@@ -55,7 +55,7 @@ jobs:
           - label: macOS Intel
             os: macos-15-intel
             target: x86_64-apple-darwin
-            bundles: dmg,app
+            bundles: dmg
             artifact: axiom-macos-x64
             platform: darwin-x86_64
             paths: |
@@ -64,7 +64,7 @@ jobs:
           - label: macOS Apple Silicon
             os: macos-15
             target: aarch64-apple-darwin
-            bundles: dmg,app
+            bundles: dmg
             artifact: axiom-macos-arm64
             platform: darwin-aarch64
             paths: |
@@ -110,6 +110,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Build signed macOS updater
+        if: runner.os == 'macOS'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --target ${{ matrix.target }} --bundles app
       - name: Upload installers and updater artifacts
         uses: actions/upload-artifact@v4
         with:

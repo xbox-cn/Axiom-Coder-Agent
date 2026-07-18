@@ -24,7 +24,7 @@ chmod +x Axiom-v1.0.4-linux-x86_64.AppImage
 ./Axiom-v1.0.4-linux-x86_64.AppImage
 ```
 
-如果系统缺少 FUSE，可安装 `libfuse2`，或使用 `--appimage-extract-and-run`。从 `v1.0.3` 起，Axiom 在 Linux 启动 WebView 前默认禁用 WebKitGTK DMA-BUF 渲染器与加速合成路径，以兼容 KDE Wayland 等会触发启动断言的桌面环境。
+如果系统缺少 FUSE，可安装 `libfuse2`，或使用 `--appimage-extract-and-run`。已发布的 `v1.0.3` AppImage 在部分滚动发行版上存在图形库冲突；后续发布流程会移除与宿主 EGL/Mesa/Wayland 栈冲突的内置库，并在上传前重新签名。
 
 ## 核心能力
 

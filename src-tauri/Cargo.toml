@@ -1,6 +1,6 @@
 [package]
 name = "axiom"
-version = "1.0.0"
+version = "1.0.1"
 description = "Local-first multi-provider AI coding agent desktop app"
 authors = ["Axiom Contributors"]
 edition = "2021"
@@ -41,6 +41,8 @@ ignore = "0.4"
 diffy = "0.4"
 sha2 = "0.10"
 base64 = "0.22"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }

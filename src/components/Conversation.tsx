@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, Check, CheckCircle2, ChevronDown, ChevronRight, CircleCheck, CircleX, Clock3, Code2, FileText, GitBranch, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, Pause, Pin, Play, RotateCcw, Sparkles, Square, TerminalSquare, Wrench } from "lucide-react";
+import { Activity, AlertTriangle, Check, CheckCircle2, CheckCheck, ChevronDown, ChevronRight, CircleCheck, CircleX, Clock3, Code2, Copy, FileText, GitBranch, LoaderCircle, MoreHorizontal, PanelLeft, PanelRight, Pause, Pencil, Pin, Play, RotateCcw, Sparkles, Square, TerminalSquare, Wrench } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
@@ -163,10 +163,17 @@ function estimateFeedItemSize(item?: FeedItem) {
 function MessageView({ message, run, onOpenChanges }: { message: Message; run?: RunRecord; onOpenChanges: () => void }) {
   const setDraft = useAppStore((state) => state.setDraft);
   const setRunMode = useAppStore((state) => state.setRunMode);
+  const reuseMessage = useAppStore((state) => state.reuseMessage);
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    await navigator.clipboard.writeText(message.content);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  };
   if (message.role === "system") return <div className="system-message"><Activity size={13}/>{message.content}</div>;
-  if (message.role === "user") return <article className="message user"><div className="user-bubble">{message.content && <p>{message.content}</p>}{message.attachments.length > 0 && <AttachmentList attachments={message.attachments}/>}</div></article>;
+  if (message.role === "user") return <article className="message user"><div className="user-bubble">{message.content && <p>{message.content}</p>}{message.attachments.length > 0 && <AttachmentList attachments={message.attachments}/>}</div><div className="message-actions user-actions"><button onClick={() => void copy()} aria-label="复制消息" title="复制消息">{copied?<CheckCheck size={14}/>:<Copy size={14}/>}</button><button onClick={() => reuseMessage(message)} aria-label="编辑并重新发送" title="编辑并重新发送"><Pencil size={14}/></button></div></article>;
   const executePlan = () => { setRunMode("agent"); setDraft(`请严格按以下计划执行，并在完成后验证结果：\n\n${message.content}`); };
-  return <article className="message assistant"><div className="message-body"><Markdown content={message.content}/>{run && <>
+  return <article className="message assistant"><div className="message-body"><div className="message-actions assistant-actions"><button onClick={() => void copy()} aria-label="复制消息" title="复制消息">{copied?<CheckCheck size={14}/>:<Copy size={14}/>}</button></div><Markdown content={message.content}/>{run && <>
     {run.config.runMode === "plan" && run.status === "completed" && <button className="execute-plan" onClick={executePlan}><Play size={14}/>按计划执行</button>}
     {run.config.runMode !== "plan" && <button className="change-summary" onClick={onOpenChanges}><CheckCircle2 size={15}/><span>查看本回合产生的代码变更</span><ChevronRight size={14}/></button>}
     <RunMeta run={run}/>
@@ -212,6 +219,22 @@ function GoalStatusCard({ run, goal }: { run: RunRecord; goal?: GoalRecord }) {
 function goalStatusText(status: string) { return status === "awaiting-approval" ? "等待审批" : status === "paused" ? "已暂停" : status === "blocked" ? "已阻塞" : status === "running" ? "运行中" : status === "completed" ? "已完成" : status === "failed" ? "失败" : statusLabel[status as RunStatus] ?? status; }
 function ThinkingState({ status }: { status: RunStatus }) { return <article className="thinking-state"><LoaderCircle className="spin" size={14}/><div><strong>{status === "queued" ? "等待运行" : status === "tool-running" ? "正在执行工具" : "正在思考"}</strong><span>Agent 正在读取上下文并规划下一步</span></div></article>; }
 function ApprovalCard({ approval, onRespond }: { approval: ApprovalRequest; onRespond: (approved: boolean) => Promise<void> }) {
+  const respondQuestion = useAppStore((state) => state.respondQuestion);
+  const [customAnswer, setCustomAnswer] = useState("");
+  if (approval.toolName === "ask_user") {
+    const rawOptions = Array.isArray(approval.arguments.options) ? approval.arguments.options : [];
+    const options = rawOptions.flatMap((value) => {
+      if (!value || typeof value !== "object") return [];
+      const item = value as Record<string, unknown>;
+      if (typeof item.id !== "string" || typeof item.label !== "string") return [];
+      return [{ id: item.id, label: item.label, description: typeof item.description === "string" ? item.description : "" }];
+    });
+    return <div className="question-card" role="dialog" aria-live="assertive" aria-label="Plan 需要你的选择">
+      <div className="question-heading"><Sparkles size={17}/><div><strong>{approval.summary}</strong><span>选择一项，Axiom 会继续完成计划</span></div></div>
+      <div className="question-options">{options.map((option, index) => <button key={option.id} onClick={() => void respondQuestion(option.id)}><kbd>{index + 1}</kbd><span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span><ChevronRight size={15}/></button>)}</div>
+      <div className="question-other"><input value={customAnswer} onChange={(event) => setCustomAnswer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && customAnswer.trim()) void respondQuestion(customAnswer.trim()); }} placeholder="或输入其他答案"/><button disabled={!customAnswer.trim()} onClick={() => void respondQuestion(customAnswer.trim())}>提交</button></div>
+    </div>;
+  }
   const argumentsText = JSON.stringify(approval.arguments, null, 2);
   return <div className="approval-card" role="alert" aria-live="assertive"><div className="approval-icon"><TerminalSquare size={18}/></div><div><strong>需要批准 {approval.toolName}</strong><code>{argumentsText}</code><p>{approval.summary}</p><small>仅允许这一次调用；敏感参数已在后端脱敏。</small></div><div className="approval-actions"><button className="ghost" onClick={() => void onRespond(false)}><RotateCcw size={14}/>拒绝</button><button className="accent" onClick={() => void onRespond(true)}><Check size={14}/>允许一次</button></div></div>;
 }

@@ -1,6 +1,7 @@
 import { ArrowUp, BrainCircuit, CircleStop, FileText, Gauge, Goal, Paperclip, Shield, Sparkles, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { onAttachmentDrop } from "../lib/api";
+import { resolveContextLimit } from "../lib/context";
 import type { PermissionMode, RunMode, ThinkingLevel } from "../lib/types";
 import { statusIsRunning, useAppStore } from "../store/appStore";
 import { Dropdown, type DropdownOption } from "./Dropdown";
@@ -46,7 +47,7 @@ export function Composer({ disabled = false }: { disabled?: boolean }) {
   const running = statusIsRunning(detail?.thread.status);
   const latestRun = detail?.runs.at(-1);
   const context = latestRun?.usage.contextTokens ?? 0;
-  const limit = latestRun?.usage.contextLimit ?? 128000;
+  const limit = resolveContextLimit(data?.providers ?? [], providerId, modelId, latestRun);
   const percent = limit > 0 ? Math.min(100, Math.round(context / limit * 100)) : 0;
   const providers = data?.providers.filter((provider) => provider.enabled) ?? [];
   const provider = providers.find((item) => item.id === providerId);
@@ -78,6 +79,12 @@ export function Composer({ disabled = false }: { disabled?: boolean }) {
     node.style.height = `${Math.min(200, Math.max(72, node.scrollHeight))}px`;
   }, [draft]);
 
+  useEffect(() => {
+    const focus = () => textarea.current?.focus();
+    window.addEventListener("axiom-focus-composer", focus);
+    return () => window.removeEventListener("axiom-focus-composer", focus);
+  }, []);
+
   const changePermission = (value: PermissionMode) => {
     if (value === "full-access" && !window.confirm("完全访问模式不提供 OS 级沙箱。Agent 可执行任意本地命令，确认启用？")) return;
     setPermission(value);
@@ -87,7 +94,9 @@ export function Composer({ disabled = false }: { disabled?: boolean }) {
     if (value === "plan") setPermission("read-only");
   };
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); void send(); }
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    if (canSend) void send();
   };
   const onDrop = (event: React.DragEvent) => {
     event.preventDefault();
@@ -118,7 +127,7 @@ export function Composer({ disabled = false }: { disabled?: boolean }) {
         </div>
       </div>
     </div>
-    <div className="composer-hint">{runMode === "plan" ? "Plan 模式由后端强制只读。" : runMode === "goal" ? "Goal 会持续执行，直到完成、阻塞、等待审批或你主动停止。" : "提交前请审查命令与代码变更。"} <kbd>Ctrl Enter</kbd></div>
+    <div className="composer-hint">{runMode === "plan" ? "Plan 模式由后端强制只读。" : runMode === "goal" ? "Goal 会持续执行，直到完成、阻塞、等待审批或你主动停止。" : "提交前请审查命令与代码变更。"} <kbd>Enter 发送</kbd><span> · </span><kbd>Shift Enter 换行</kbd></div>
   </div>;
 }
 

@@ -49,6 +49,7 @@ impl Database {
                 title TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'idle',
                 unread_approval INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -202,7 +203,7 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value_json TEXT NOT NULL
             );
-            PRAGMA user_version = 5;
+            PRAGMA user_version = 6;
             "#,
         )
         .map_err(|e| e.to_string())?;
@@ -241,6 +242,7 @@ impl Database {
             ),
             ("goal_turns", "updated_at", "TEXT"),
             ("goal_turns", "completed_at", "TEXT"),
+            ("threads", "archived", "INTEGER NOT NULL DEFAULT 0"),
         ] {
             let exists = {
                 let mut statement = conn
@@ -508,9 +510,9 @@ impl Database {
     pub fn list_threads(&self, project_id: Option<&str>) -> Result<Vec<ThreadSummary>, String> {
         let conn = self.conn.lock();
         let sql = if project_id.is_some() {
-            "SELECT id, project_id, title, status, unread_approval, created_at, updated_at FROM threads WHERE project_id = ?1 ORDER BY updated_at DESC"
+            "SELECT id, project_id, title, status, unread_approval, archived, created_at, updated_at FROM threads WHERE project_id = ?1 ORDER BY updated_at DESC"
         } else {
-            "SELECT id, project_id, title, status, unread_approval, created_at, updated_at FROM threads ORDER BY updated_at DESC"
+            "SELECT id, project_id, title, status, unread_approval, archived, created_at, updated_at FROM threads ORDER BY updated_at DESC"
         };
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let mapper = |row: &rusqlite::Row<'_>| -> rusqlite::Result<ThreadSummary> {
@@ -520,8 +522,9 @@ impl Database {
                 title: row.get(2)?,
                 status: parse_status(&row.get::<_, String>(3)?),
                 unread_approval: row.get::<_, i64>(4)? != 0,
-                created_at: row.get(5)?,
-                updated_at: row.get(6)?,
+                archived: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
             })
         };
         let mut items = Vec::new();
@@ -544,14 +547,42 @@ impl Database {
     fn get_thread_summary(&self, id: &str) -> Result<ThreadSummary, String> {
         let conn = self.conn.lock();
         conn.query_row(
-            "SELECT id, project_id, title, status, unread_approval, created_at, updated_at FROM threads WHERE id = ?1",
+            "SELECT id, project_id, title, status, unread_approval, archived, created_at, updated_at FROM threads WHERE id = ?1",
             params![id],
             |row| Ok(ThreadSummary {
                 id: row.get(0)?, project_id: row.get(1)?, title: row.get(2)?,
                 status: parse_status(&row.get::<_, String>(3)?), unread_approval: row.get::<_, i64>(4)? != 0,
-                created_at: row.get(5)?, updated_at: row.get(6)?,
+                archived: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?, updated_at: row.get(7)?,
             }),
         ).map_err(|e| e.to_string())
+    }
+
+    pub fn archive_thread(&self, id: &str, archived: bool) -> Result<(), String> {
+        let changed = self
+            .conn
+            .lock()
+            .execute(
+                "UPDATE threads SET archived=?2, updated_at=?3 WHERE id=?1",
+                params![id, if archived { 1 } else { 0 }, Utc::now().to_rfc3339()],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err("任务不存在".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn delete_thread(&self, id: &str) -> Result<(), String> {
+        let changed = self
+            .conn
+            .lock()
+            .execute("DELETE FROM threads WHERE id=?1", params![id])
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err("任务不存在".to_string());
+        }
+        Ok(())
     }
 
     pub fn get_thread(&self, id: &str) -> Result<ThreadDetail, String> {
@@ -686,13 +717,22 @@ impl Database {
         thread_id: &str,
         config: &RunConfigSnapshot,
     ) -> Result<RunRecord, String> {
+        self.create_run_with_context(thread_id, config, 128_000)
+    }
+
+    pub fn create_run_with_context(
+        &self,
+        thread_id: &str,
+        config: &RunConfigSnapshot,
+        context_limit: u64,
+    ) -> Result<RunRecord, String> {
         let run = RunRecord {
             id: Uuid::new_v4().to_string(),
             thread_id: thread_id.to_string(),
             status: RunStatus::Queued,
             config: config.clone(),
             usage: UsageRecord {
-                context_limit: 128_000,
+                context_limit,
                 estimated: true,
                 ..Default::default()
             },
@@ -1403,14 +1443,14 @@ impl Database {
     }
 
     pub fn decide_approval(&self, id: &str, approved: bool) -> Result<(), String> {
+        self.decide_approval_value(id, if approved { "approved" } else { "denied" })
+    }
+
+    pub fn decide_approval_value(&self, id: &str, decision: &str) -> Result<(), String> {
         let conn = self.conn.lock();
         conn.execute(
             "UPDATE approvals SET decision=?2, decided_at=?3 WHERE id=?1 AND decision IS NULL",
-            params![
-                id,
-                if approved { "approved" } else { "denied" },
-                Utc::now().to_rfc3339()
-            ],
+            params![id, decision, Utc::now().to_rfc3339()],
         )
         .map_err(|e| e.to_string())?;
         conn.execute(
@@ -1648,7 +1688,13 @@ fn project_from_row(row: &rusqlite::Row<'_>) -> Project {
 }
 
 fn git_branch(path: &Path) -> Option<String> {
-    std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
         .args(["-C", &path.to_string_lossy(), "branch", "--show-current"])
         .output()
         .ok()

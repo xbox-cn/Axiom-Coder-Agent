@@ -10,6 +10,15 @@ use std::{
 use tokio::process::Command;
 
 #[cfg(windows)]
+fn hide_background_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.as_std_mut().creation_flags(0x08000000);
+}
+
+#[cfg(not(windows))]
+fn hide_background_window(_command: &mut Command) {}
+
+#[cfg(windows)]
 pub(crate) mod process_tree {
     use std::{ffi::c_void, mem::size_of, ptr::null};
     use windows_sys::Win32::{
@@ -348,7 +357,9 @@ pub async fn git_summary(root: &Path) -> Result<GitSummary, String> {
 }
 
 async fn run_git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    hide_background_window(&mut command);
+    let output = command
         .arg("-C")
         .arg(root)
         .args(args)
@@ -376,6 +387,8 @@ pub async fn execute_shell(
     let started = Instant::now();
     #[cfg(windows)]
     let mut child = Command::new("powershell");
+    #[cfg(windows)]
+    hide_background_window(&mut child);
     #[cfg(windows)]
     child.args([
         "-NoLogo",

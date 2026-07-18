@@ -1,11 +1,14 @@
 use crate::{db::Database, models::*, secrets};
 use base64::Engine;
 use reqwest::{
-    header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
+    header::{
+        HeaderMap, HeaderName, HeaderValue, ACCEPT, ACCEPT_ENCODING, AUTHORIZATION, CONTENT_TYPE,
+    },
     Client, RequestBuilder, Response,
 };
 use serde_json::{json, Value};
 use std::{
+    error::Error as _,
     str::FromStr,
     sync::Arc,
     time::{Duration, Instant},
@@ -77,7 +80,16 @@ pub fn protect_extra_headers(provider_id: &str, headers: &Value) -> Result<Value
 
 fn client(profile: &ProviderProfile) -> Result<Client, String> {
     Client::builder()
-        .timeout(Duration::from_secs(profile.timeout_seconds.max(10)))
+        // A total timeout also counts time spent streaming and can abort a healthy long
+        // reasoning response. Use a generous inactivity timeout instead.
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(profile.timeout_seconds.max(600)))
+        // Some compatible proxies advertise compressed bodies but send malformed frames.
+        // Requesting identity avoids the opaque "error decoding response body" failure.
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .no_zstd()
         .build()
         .map_err(|e| format!("Could not create HTTP client: {e}"))
 }
@@ -172,6 +184,10 @@ pub async fn discover_models_draft(
     let models_url = provider_endpoint(base_url, "models")?;
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .no_zstd()
         .build()
         .map_err(|error| format!("无法创建网络客户端: {error}"))?;
     let request = with_key(
@@ -241,6 +257,102 @@ pub async fn discover_models_draft(
     models.sort_by(|left, right| left.id.cmp(&right.id));
     models.dedup_by(|left, right| left.id == right.id);
     Ok(models)
+}
+
+pub async fn test_model_draft(
+    api_type: ProviderApiType,
+    base_url: &str,
+    api_key: Option<&str>,
+    model_id: &str,
+) -> Result<DraftModelTestResult, String> {
+    let model_id = model_id.trim();
+    if model_id.is_empty() {
+        return Err("Model ID is required".to_string());
+    }
+    let endpoint = match api_type {
+        ProviderApiType::Responses => "responses",
+        ProviderApiType::ChatCompletions => "chat/completions",
+    };
+    let url = provider_endpoint(base_url, endpoint)?;
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(20))
+        .timeout(Duration::from_secs(90))
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .no_zstd()
+        .build()
+        .map_err(|error| format!("Could not create HTTP client: {error}"))?;
+    let body = match api_type {
+        ProviderApiType::Responses => json!({
+            "model": model_id,
+            "input": "Hello",
+            "stream": false,
+            "max_output_tokens": 32
+        }),
+        ProviderApiType::ChatCompletions => json!({
+            "model": model_id,
+            "messages": [{"role":"user", "content":"Hello"}],
+            "stream": false,
+            "max_tokens": 32
+        }),
+    };
+    let started = Instant::now();
+    let request = with_key(
+        client
+            .post(url)
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "application/json")
+            .header(ACCEPT_ENCODING, "identity")
+            .json(&body),
+        ProviderKind::OpenAiCompatible,
+        api_key.filter(|value| !value.trim().is_empty()),
+    );
+    let response = request.send().await.map_err(|error| {
+        redact_known_secret(format!("Model test request failed: {error}"), api_key)
+    })?;
+    let response =
+        checked_response_for_api(response, api_key, api_type == ProviderApiType::Responses).await?;
+    let bytes = response.bytes().await.map_err(|error| {
+        redact_known_secret(format!("Model test response failed: {error}"), api_key)
+    })?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!("The provider returned invalid JSON during the model test: {error}")
+    })?;
+    let text = match api_type {
+        ProviderApiType::Responses => {
+            let status = value
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if value.get("error").is_some()
+                || matches!(status, "failed" | "incomplete" | "cancelled")
+            {
+                return Err(redact_known_secret(
+                    provider_error(500, &json!({"response": value})),
+                    api_key,
+                ));
+            }
+            responses_json_text(&value)
+        }
+        ProviderApiType::ChatCompletions => chat_json_text(&value),
+    };
+    if text.trim().is_empty() {
+        return Err("The model test returned no text".to_string());
+    }
+    let usage = value.get("usage").map(|raw| {
+        let mut usage = normalize_usage(Some(raw), &text, &[]);
+        usage.context_limit = builtin_context_limit(model_id);
+        usage.duration_ms = Some(started.elapsed().as_millis() as u64);
+        usage
+    });
+    let response_preview: String = text.trim().chars().take(240).collect();
+    Ok(DraftModelTestResult {
+        ok: true,
+        latency_ms: started.elapsed().as_millis() as u64,
+        response_preview,
+        usage,
+    })
 }
 
 pub async fn discover_models(
@@ -448,16 +560,114 @@ where
 }
 
 async fn checked_response(response: Response, secret: Option<&str>) -> Result<Response, String> {
+    checked_response_for_api(response, secret, false).await
+}
+
+async fn checked_response_for_api(
+    response: Response,
+    secret: Option<&str>,
+    responses_api: bool,
+) -> Result<Response, String> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
     let body = response.text().await.unwrap_or_default();
     let parsed = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({"message": body}));
+    let lower = parsed.to_string().to_ascii_lowercase();
+    if responses_api
+        && (matches!(status.as_u16(), 404 | 405 | 501)
+            || lower.contains("not implemented")
+            || lower.contains("unsupported") && lower.contains("responses"))
+    {
+        return Err(
+            "当前上游不支持 Responses API（/responses），请在供应商设置中切换为 Chat Completions。"
+                .to_string(),
+        );
+    }
     Err(redact_known_secret(
         provider_error(status.as_u16(), &parsed),
         secret,
     ))
+}
+
+#[derive(Debug, Clone)]
+struct StreamMetadata {
+    content_type: String,
+    content_encoding: String,
+}
+
+impl StreamMetadata {
+    fn from_response(response: &Response) -> Self {
+        let header = |name| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("not reported")
+                .to_string()
+        };
+        Self {
+            content_type: header(CONTENT_TYPE),
+            content_encoding: header(reqwest::header::CONTENT_ENCODING),
+        }
+    }
+}
+
+fn body_looks_like_json(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| matches!(byte, b'{' | b'['))
+}
+
+async fn collect_response_body(
+    mut response: Response,
+    mut body: Vec<u8>,
+    label: &str,
+    metadata: &StreamMetadata,
+) -> Result<Vec<u8>, String> {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| stream_error(label, &error, metadata, false))?
+    {
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn stream_error(
+    label: &str,
+    error: &reqwest::Error,
+    metadata: &StreamMetadata,
+    received_output: bool,
+) -> String {
+    let stage = if received_output {
+        "在返回部分内容后"
+    } else {
+        "在首个文本到达前"
+    };
+    let reason = if error.is_timeout() {
+        "上游长时间没有返回数据"
+    } else if error.is_decode() {
+        "上游或代理返回了无法解码的响应体"
+    } else if error.is_body() {
+        "上游响应体被提前中断"
+    } else {
+        "网络流被中断"
+    };
+    let source = error
+        .source()
+        .map(ToString::to_string)
+        .filter(|value| value != &error.to_string())
+        .map(|value| format!("；底层原因：{value}"))
+        .unwrap_or_default();
+    format!(
+        "{label} {stage}中断：{reason}（Content-Type: {}，Content-Encoding: {}）：{error}{source}。Axiom 已请求 identity 编码；请重试，并检查上游服务或代理。",
+        metadata.content_type, metadata.content_encoding
+    )
 }
 
 async fn generate_openai_compatible<F>(
@@ -500,6 +710,8 @@ where
             client
                 .post(url)
                 .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "text/event-stream")
+                .header(ACCEPT_ENCODING, "identity")
                 .json(&body),
             profile.kind,
             key,
@@ -511,17 +723,21 @@ where
         .await
         .map_err(|e| format!("Provider request failed: {e}"))?;
     let mut response = checked_response(response, key).await?;
+    let stream_metadata = StreamMetadata::from_response(&response);
     let started = Instant::now();
     let mut first_token_ms = None;
     let mut text = String::new();
     let mut raw_usage: Option<Value> = None;
     let mut tool = ChatToolAccumulator::default();
     let mut decoder = SseDecoder::default();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("Provider stream interrupted: {e}"))?
-    {
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        stream_error(
+            "Provider stream",
+            &error,
+            &stream_metadata,
+            !text.is_empty(),
+        )
+    })? {
         for data in decoder.feed(&chunk)? {
             if data == "[DONE]" {
                 continue;
@@ -588,6 +804,34 @@ fn responses_tools(run_mode: RunMode, plan_mcp_tools: &[AllowedMcpTool]) -> Vec<
         json!({"type":"function","name":"git_status","description":"Read Git status for the workspace.","parameters":{"type":"object","properties":{},"additionalProperties":false}}),
         json!({"type":"function","name":"git_diff","description":"Read the current Git diff.","parameters":{"type":"object","properties":{},"additionalProperties":false}}),
     ];
+    if run_mode == RunMode::Plan {
+        tools.push(json!({
+            "type":"function",
+            "name":"ask_user",
+            "description":"Ask the user one decision-critical clarification using a choice card. Use only when the answer materially changes the plan.",
+            "parameters":{
+                "type":"object",
+                "properties":{
+                    "question":{"type":"string","description":"One concise question."},
+                    "options":{
+                        "type":"array","minItems":2,"maxItems":3,
+                        "items":{
+                            "type":"object",
+                            "properties":{
+                                "id":{"type":"string"},
+                                "label":{"type":"string"},
+                                "description":{"type":"string"}
+                            },
+                            "required":["id","label","description"],
+                            "additionalProperties":false
+                        }
+                    }
+                },
+                "required":["question","options"],
+                "additionalProperties":false
+            }
+        }));
+    }
     if run_mode != RunMode::Plan {
         tools.extend([
             json!({"type":"function","name":"write_file","description":"Write complete UTF-8 content to a workspace file.","parameters":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}}),
@@ -769,6 +1013,114 @@ impl ResponsesToolAccumulator {
     }
 }
 
+fn finish_responses_json<F>(
+    body: &[u8],
+    key: Option<&str>,
+    messages: &[Message],
+    model: &str,
+    started: Instant,
+    on_event: &mut F,
+) -> Result<ProviderResponse, String>
+where
+    F: FnMut(ProviderStreamEvent),
+{
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|error| format!("Invalid Responses JSON response: {error}"))?;
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if value.get("error").is_some() || matches!(status, "failed" | "incomplete" | "cancelled") {
+        return Err(redact_known_secret(
+            provider_error(500, &json!({"response": value})),
+            key,
+        ));
+    }
+
+    let mut text = String::new();
+    let mut first_token_ms = None;
+    let output_text = responses_json_text(&value);
+    if !output_text.is_empty() {
+        register_delta(
+            output_text,
+            &mut text,
+            &mut first_token_ms,
+            started,
+            on_event,
+        );
+    }
+    let mut tool = ResponsesToolAccumulator::default();
+    if let Some(items) = value.get("output").and_then(Value::as_array) {
+        for item in items {
+            tool.observe(&json!({"type":"response.output_item.done","item":item}));
+        }
+    }
+    finish_response_with_tool(
+        text,
+        value.get("usage"),
+        messages,
+        model,
+        first_token_ms,
+        tool.finish()?,
+    )
+}
+
+fn observe_responses_sse_event<F>(
+    data: &str,
+    key: Option<&str>,
+    tool: &mut ResponsesToolAccumulator,
+    text: &mut String,
+    raw_usage: &mut Option<Value>,
+    first_token_ms: &mut Option<u64>,
+    started: Instant,
+    on_event: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(ProviderStreamEvent),
+{
+    if data == "[DONE]" {
+        return Ok(());
+    }
+    let value: Value = serde_json::from_str(data)
+        .map_err(|error| format!("Invalid Responses SSE event: {error}"))?;
+    tool.observe(&value);
+    match value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "response.output_text.delta" => {
+            if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                register_delta(delta.to_string(), text, first_token_ms, started, on_event);
+            }
+        }
+        "response.output_text.done" => {
+            if text.is_empty() {
+                if let Some(done) = value.get("text").and_then(Value::as_str) {
+                    register_delta(done.to_string(), text, first_token_ms, started, on_event);
+                }
+            }
+        }
+        "response.completed" => {
+            *raw_usage = value.pointer("/response/usage").cloned();
+            if text.is_empty() {
+                let complete = value
+                    .get("response")
+                    .map(responses_json_text)
+                    .unwrap_or_default();
+                if !complete.is_empty() {
+                    register_delta(complete, text, first_token_ms, started, on_event);
+                }
+            }
+        }
+        "response.failed" | "response.incomplete" | "response.error" | "error" => {
+            return Err(redact_known_secret(provider_error(500, &value), key));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 async fn generate_responses<F>(
     profile: &ProviderProfile,
     key: Option<&str>,
@@ -805,6 +1157,8 @@ where
             client
                 .post(url)
                 .header(CONTENT_TYPE, "application/json")
+                .header(ACCEPT, "text/event-stream")
+                .header(ACCEPT_ENCODING, "identity")
                 .json(&body),
             profile.kind,
             key,
@@ -815,82 +1169,103 @@ where
         .send()
         .await
         .map_err(|error| format!("Provider request failed: {error}"))?;
-    let mut response = checked_response(response, key).await?;
+    let mut response = checked_response_for_api(response, key, true).await?;
+    let stream_metadata = StreamMetadata::from_response(&response);
+    let is_json = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().contains("application/json"));
     let started = Instant::now();
+
+    if is_json {
+        let body = collect_response_body(
+            response,
+            Vec::new(),
+            "Responses response body",
+            &stream_metadata,
+        )
+        .await?;
+        return finish_responses_json(&body, key, messages, model, started, on_event);
+    }
+
+    // Some OpenAI-compatible gateways ignore `Accept: text/event-stream` and return a
+    // complete JSON object with a missing or `text/plain` Content-Type. Buffer only the
+    // leading whitespace needed to sniff the body, then preserve normal token streaming.
+    let mut initial = Vec::new();
+    loop {
+        let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| stream_error("Responses stream", &error, &stream_metadata, false))?
+        else {
+            break;
+        };
+        initial.extend_from_slice(&chunk);
+        if initial.iter().any(|byte| !byte.is_ascii_whitespace()) {
+            break;
+        }
+    }
+    if body_looks_like_json(&initial) {
+        let body = collect_response_body(
+            response,
+            initial,
+            "Responses response body",
+            &stream_metadata,
+        )
+        .await?;
+        return finish_responses_json(&body, key, messages, model, started, on_event);
+    }
+
     let mut first_token_ms = None;
     let mut text = String::new();
     let mut raw_usage: Option<Value> = None;
     let mut tool = ResponsesToolAccumulator::default();
     let mut decoder = SseDecoder::default();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("Responses stream interrupted: {error}"))?
-    {
+    for data in decoder.feed(&initial)? {
+        observe_responses_sse_event(
+            &data,
+            key,
+            &mut tool,
+            &mut text,
+            &mut raw_usage,
+            &mut first_token_ms,
+            started,
+            on_event,
+        )?;
+    }
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        stream_error(
+            "Responses stream",
+            &error,
+            &stream_metadata,
+            !text.is_empty(),
+        )
+    })? {
         for data in decoder.feed(&chunk)? {
-            if data == "[DONE]" {
-                continue;
-            }
-            let value: Value = serde_json::from_str(&data)
-                .map_err(|error| format!("Invalid Responses SSE event: {error}"))?;
-            tool.observe(&value);
-            match value
-                .get("type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-            {
-                "response.output_text.delta" => {
-                    if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                        register_delta(
-                            delta.to_string(),
-                            &mut text,
-                            &mut first_token_ms,
-                            started,
-                            on_event,
-                        );
-                    }
-                }
-                "response.completed" => {
-                    raw_usage = value.pointer("/response/usage").cloned();
-                }
-                "response.failed" | "response.incomplete" | "response.error" | "error" => {
-                    return Err(redact_known_secret(provider_error(500, &value), key));
-                }
-                _ => {}
-            }
+            observe_responses_sse_event(
+                &data,
+                key,
+                &mut tool,
+                &mut text,
+                &mut raw_usage,
+                &mut first_token_ms,
+                started,
+                on_event,
+            )?;
         }
     }
     for data in decoder.finish()? {
-        if data == "[DONE]" {
-            continue;
-        }
-        let value: Value = serde_json::from_str(&data)
-            .map_err(|error| format!("Invalid Responses SSE event: {error}"))?;
-        tool.observe(&value);
-        match value
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-        {
-            "response.output_text.delta" => {
-                if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                    register_delta(
-                        delta.to_string(),
-                        &mut text,
-                        &mut first_token_ms,
-                        started,
-                        on_event,
-                    );
-                }
-            }
-            "response.completed" => {
-                raw_usage = value.pointer("/response/usage").cloned();
-            }
-            "response.failed" | "response.incomplete" | "response.error" | "error" => {
-                return Err(redact_known_secret(provider_error(500, &value), key));
-            }
-            _ => {}
-        }
+        observe_responses_sse_event(
+            &data,
+            key,
+            &mut tool,
+            &mut text,
+            &mut raw_usage,
+            &mut first_token_ms,
+            started,
+            on_event,
+        )?;
     }
     finish_response_with_tool(
         text,
@@ -1274,6 +1649,47 @@ fn responses_input_item(message: &Message) -> Result<Value, String> {
     }
     message_content(message, true)
         .map(|content| json!({"role": role_name(message.role), "content": content}))
+}
+
+fn chat_json_text(response: &Value) -> String {
+    let Some(content) = response.pointer("/choices/0/message/content") else {
+        return String::new();
+    };
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .or_else(|| part.get("content").and_then(Value::as_str))
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn responses_json_text(response: &Value) -> String {
+    if let Some(text) = response.get("output_text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+    response
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|item| {
+            item.get("content")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn finish_response(
@@ -1904,5 +2320,65 @@ mod tests {
         assert!(usage.output_tokens.is_some());
         assert!(usage.estimated);
         assert_eq!(usage.cached_tokens, None);
+    }
+
+    #[test]
+    fn sse_decoder_handles_crlf_and_final_event_without_blank_line() {
+        let mut decoder = SseDecoder::default();
+        assert_eq!(
+            decoder.feed(b"data: {\"delta\":\"a\"}\r\n\r\n").unwrap(),
+            vec!["{\"delta\":\"a\"}"]
+        );
+        assert!(decoder.feed(b"data: {\"delta\":\"b\"}").unwrap().is_empty());
+        assert_eq!(decoder.finish().unwrap(), vec!["{\"delta\":\"b\"}"]);
+    }
+
+    #[test]
+    fn response_body_sniffing_accepts_json_without_content_type() {
+        assert!(body_looks_like_json(b"  \r\n {\"output_text\":\"hello\"}"));
+        assert!(body_looks_like_json(b"[1, 2, 3]"));
+        assert!(!body_looks_like_json(
+            b"data: {\"type\":\"response.completed\"}"
+        ));
+        assert!(!body_looks_like_json(b"   \r\n"));
+    }
+
+    #[test]
+    fn complete_json_text_is_extracted_for_chat_and_responses() {
+        assert_eq!(
+            chat_json_text(&json!({"choices":[{"message":{"content":"hello"}}]})),
+            "hello"
+        );
+        assert_eq!(
+            chat_json_text(&json!({"choices":[{"message":{"content":[
+                {"type":"text","text":"hel"},
+                {"type":"text","content":"lo"}
+            ]}}]})),
+            "hello"
+        );
+        assert_eq!(
+            responses_json_text(&json!({"output_text":"hello"})),
+            "hello"
+        );
+        assert_eq!(
+            responses_json_text(&json!({"output":[{"type":"message","content":[
+                {"type":"output_text","text":"hel"},
+                {"type":"output_text","text":"lo"}
+            ]}]})),
+            "hello"
+        );
+    }
+
+    #[test]
+    fn plan_protocols_both_expose_ask_user_and_exclude_shell() {
+        let responses = responses_tools(RunMode::Plan, &[]);
+        assert!(responses.iter().any(|tool| tool["name"] == "ask_user"));
+        assert!(!responses.iter().any(|tool| tool["name"] == "shell"));
+
+        let chat = chat_tools(RunMode::Plan, &[]);
+        assert!(chat
+            .iter()
+            .any(|tool| tool["function"]["name"] == "ask_user"));
+        assert!(!chat.iter().any(|tool| tool["function"]["name"] == "shell"));
     }
 }

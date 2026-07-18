@@ -8,7 +8,7 @@ export type MessageRole = "system" | "user" | "assistant" | "tool";
 export type InspectorTab = "changes" | "files" | "terminal" | "context";
 
 export interface Project { id:string; name:string; path:string; favorite:boolean; createdAt:string; updatedAt:string; gitBranch?:string|null }
-export interface ThreadSummary { id:string; projectId:string; title:string; status:RunStatus; createdAt:string; updatedAt:string; unreadApproval:boolean }
+export interface ThreadSummary { id:string; projectId:string; title:string; status:RunStatus; createdAt:string; updatedAt:string; unreadApproval:boolean; archived:boolean }
 export interface AttachmentSnapshot { id:string; name:string; mimeType:string; size:number; sha256:string; snapshotPath:string; kind:"text"|"image" }
 export interface Message { id:string; threadId:string; role:MessageRole; content:string; createdAt:string; runId?:string|null; pinned:boolean; attachments:AttachmentSnapshot[] }
 export interface ModelCapabilities { tools:boolean; vision:boolean; reasoning:boolean; reasoningLevels:ThinkingLevel[]; usageReporting:boolean }
@@ -25,6 +25,7 @@ export interface ThreadDetail { thread:ThreadSummary; messages:Message[]; runs:R
 export interface ProviderProfile { id:string; kind:ProviderKind; name:string; baseUrl:string; defaultModel:string; enabled:boolean; timeoutSeconds:number; extraHeaders:Record<string,string>; hasCredential:boolean; createdAt:string; updatedAt:string; apiType:ProviderApiType; models:ProviderModel[]; legacy:boolean }
 export interface ProviderProfileInput { id?:string; kind:ProviderKind; name:string; baseUrl:string; defaultModel:string; enabled:boolean; timeoutSeconds:number; extraHeaders:Record<string,string>; apiKey?:string; apiType:ProviderApiType; models:ProviderModelInput[] }
 export interface McpServerConfig { id:string; name:string; scope:"global"|"project"; projectId?:string|null; transport:"stdio"|"streamable-http"; command?:string|null; args:string[]; cwd?:string|null; url?:string|null; env:Record<string,string>; headers:Record<string,string>; timeoutSeconds:number; enabled:boolean; status:string; lastError?:string|null; discoveredTools:string[]; disabledTools:string[]; readOnlyTools:string[]; updatedAt:string }
+export interface DraftModelTestResult { ok:boolean; latencyMs:number; responsePreview:string; usage?:UsageRecord|null }
 export interface McpTestResult { ok:boolean; serverName?:string|null; protocolVersion?:string|null; tools:string[]; readOnlyTools:string[]; latencyMs:number; message:string }
 export interface AppSettings { theme:"system"|"light"|"dark"; sidebarCollapsed:boolean; sidebarWidth:number; inspectorOpen:boolean; inspectorWidth:number; defaultPermission:PermissionMode; defaultProviderId?:string|null; defaultModelId?:string|null; defaultThinkingLevel:ThinkingLevel }
 export interface AppBootstrap { projects:Project[]; threads:ThreadSummary[]; providers:ProviderProfile[]; mcpServers:McpServerConfig[]; settings:AppSettings }

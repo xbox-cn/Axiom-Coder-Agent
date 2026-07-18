@@ -64,12 +64,16 @@ interface AppStore {
   selectThread: (id: string) => Promise<void>;
   addProject: () => Promise<void>;
   createThread: () => Promise<void>;
+  archiveThread: (id: string, archived: boolean) => Promise<void>;
+  deleteThread: (id: string) => Promise<void>;
+  reuseMessage: (message: Message) => void;
   send: () => Promise<void>;
   cancel: () => Promise<void>;
   resumeGoal: (runId: string) => Promise<void>;
   finishGoal: (runId: string) => Promise<void>;
   handleAgentEvent: (event: AgentEvent) => void;
   respondApproval: (approved: boolean) => Promise<void>;
+  respondQuestion: (answer: string) => Promise<void>;
   restoreLatestRun: () => Promise<void>;
   restoreFileChange: (path: string) => Promise<void>;
   openFileExternal: (path: string) => Promise<void>;
@@ -242,6 +246,44 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       set({ error: String(error) });
     }
+  },
+
+  archiveThread: async (id, archived) => {
+    try {
+      await api.archiveThread(id, archived);
+      const state = get();
+      const current = state.bootstrapData?.threads.find((thread) => thread.id === id);
+      set((value) => ({
+        bootstrapData: value.bootstrapData ? {
+          ...value.bootstrapData,
+          threads: value.bootstrapData.threads.map((thread) => thread.id === id ? { ...thread, archived } : thread),
+        } : null,
+      }));
+      if (state.activeThreadId === id) {
+        const fallback = state.bootstrapData?.threads.find((thread) => thread.id !== id && thread.projectId === current?.projectId && !thread.archived);
+        if (fallback) await get().selectThread(fallback.id);
+        else set({ activeThreadId: null, threadDetail: null });
+      }
+    } catch (error) { set({ error: String(error) }); }
+  },
+
+  deleteThread: async (id) => {
+    try {
+      await api.deleteThread(id);
+      const state = get();
+      const removed = state.bootstrapData?.threads.find((thread) => thread.id === id);
+      const fallback = state.bootstrapData?.threads.find((thread) => thread.id !== id && thread.projectId === removed?.projectId && !thread.archived);
+      set((value) => ({
+        bootstrapData: value.bootstrapData ? { ...value.bootstrapData, threads: value.bootstrapData.threads.filter((thread) => thread.id !== id) } : null,
+        ...(value.activeThreadId === id ? { activeThreadId: null, threadDetail: null } : {}),
+      }));
+      if (state.activeThreadId === id && fallback) await get().selectThread(fallback.id);
+    } catch (error) { set({ error: String(error) }); }
+  },
+
+  reuseMessage: (message) => {
+    set({ draft: message.content, attachments: message.attachments.map((attachment) => ({ ...attachment })) });
+    window.dispatchEvent(new Event("axiom-focus-composer"));
   },
 
   send: async () => {
@@ -445,6 +487,21 @@ export const useAppStore = create<AppStore>((set, get) => ({
     } catch (error) {
       set({ error: String(error) });
     }
+  },
+
+  respondQuestion: async (answer) => {
+    const question = get().pendingApproval;
+    if (!question || question.toolName !== "ask_user") return;
+    try {
+      await api.respondUserQuestion(question.id, answer);
+      set((state) => ({
+        pendingApproval: null,
+        threadDetail: state.threadDetail ? {
+          ...state.threadDetail,
+          thread: { ...state.threadDetail.thread, status: "tool-running", unreadApproval: false },
+        } : null,
+      }));
+    } catch (error) { set({ error: String(error) }); }
   },
 
   restoreLatestRun: async () => {

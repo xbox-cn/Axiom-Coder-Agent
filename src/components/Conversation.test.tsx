@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Conversation } from "./Conversation";
 import { useAppStore } from "../store/appStore";
 import { bootstrap, runConfig, runRecord, threadDetail, usage } from "../test/fixtures";
+import * as api from "../lib/api";
 
 function seedConversation() {
   const detail = threadDetail("awaiting-approval");
@@ -40,7 +41,14 @@ function seedConversation() {
   });
 }
 
-beforeEach(seedConversation);
+beforeEach(() => {
+  vi.restoreAllMocks();
+  seedConversation();
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+  });
+});
 
 describe("Conversation", () => {
   it("明确区分准确和估算 Usage，并展开完整指标", () => {
@@ -60,6 +68,71 @@ describe("Conversation", () => {
     expect(screen.getByLabelText("工具活动")).toHaveTextContent("read_file");
     expect(screen.getByLabelText("工具活动")).toHaveTextContent("已读取文件");
     expect(screen.getByText("上下文已透明压缩")).toBeInTheDocument();
+  });
+
+  it("用户和助手消息都可以复制", async () => {
+    render(<Conversation />);
+    const copyButtons = screen.getAllByRole("button", { name: "复制消息" });
+    fireEvent.click(copyButtons[0]);
+    fireEvent.click(copyButtons[1]);
+    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(2));
+    expect(navigator.clipboard.writeText).toHaveBeenNthCalledWith(1, "检查项目");
+    expect(navigator.clipboard.writeText).toHaveBeenNthCalledWith(2, "已完成精确统计。");
+  });
+
+  it("编辑并重新发送会恢复正文和附件快照", () => {
+    const detail = useAppStore.getState().threadDetail!;
+    detail.messages[0].attachments = [{
+      id: "attachment-a",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      size: 12,
+      sha256: "hash",
+      snapshotPath: "D:/AxiomData/notes.txt",
+      kind: "text",
+    }];
+    useAppStore.setState({ threadDetail: { ...detail } });
+    render(<Conversation />);
+    fireEvent.click(screen.getByRole("button", { name: "编辑并重新发送" }));
+    expect(useAppStore.getState().draft).toBe("检查项目");
+    expect(useAppStore.getState().attachments).toEqual([expect.objectContaining({ id: "attachment-a", name: "notes.txt" })]);
+  });
+
+  it("Plan 提问以选择卡提交选项", async () => {
+    const respond = vi.spyOn(api, "respondUserQuestion").mockResolvedValue(undefined);
+    useAppStore.setState({
+      pendingApproval: {
+        id: "question-a",
+        toolName: "ask_user",
+        summary: "选择实现方式",
+        arguments: { options: [
+          { id: "safe", label: "稳妥方案", description: "优先兼容性" },
+          { id: "fast", label: "快速方案", description: "减少改动" },
+        ] },
+        createdAt: "2026-01-01T00:00:03.000Z",
+      },
+    });
+    render(<Conversation />);
+    expect(screen.getByRole("dialog", { name: "Plan 需要你的选择" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /稳妥方案/ }));
+    await waitFor(() => expect(respond).toHaveBeenCalledWith("question-a", "safe"));
+  });
+
+  it("Plan 提问支持输入自定义答案", async () => {
+    const respond = vi.spyOn(api, "respondUserQuestion").mockResolvedValue(undefined);
+    useAppStore.setState({
+      pendingApproval: {
+        id: "question-custom",
+        toolName: "ask_user",
+        summary: "补充要求",
+        arguments: { options: [] },
+        createdAt: "2026-01-01T00:00:03.000Z",
+      },
+    });
+    render(<Conversation />);
+    fireEvent.change(screen.getByPlaceholderText("或输入其他答案"), { target: { value: "保留兼容层" } });
+    fireEvent.click(screen.getByRole("button", { name: "提交" }));
+    await waitFor(() => expect(respond).toHaveBeenCalledWith("question-custom", "保留兼容层"));
   });
 
   it("10,000 条消息仅渲染可视窗口", () => {

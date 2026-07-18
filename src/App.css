@@ -115,7 +115,7 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 .sidebar-actions button, .sidebar-footer button { height: 33px; padding: 0 8px; border-radius: 7px; font-size: 13px; }
 .sidebar-actions .primary-nav { background: var(--surface); box-shadow: 0 1px 2px rgba(25,25,22,.035); }
 .sidebar-actions .primary-nav:hover { background: color-mix(in srgb, var(--surface) 75%, var(--surface-3)); }
-.sidebar-section-title { height: 27px; font-size: 11px; letter-spacing: .25px; }
+.sidebar-section-title { height: 27px; font-size: 12px; letter-spacing: .25px; }
 .project-row { height: 33px; border-radius: 7px; }
 .thread-list button { min-height: 32px; padding: 4px 7px; font-size: 13px; }
 .thread-list button.active { background: var(--surface-3); box-shadow: none; }
@@ -156,7 +156,7 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 .code-block pre { margin: 0; padding: 13px 15px; font-size: 12px; line-height: 1.58; }
 .change-summary { font-size: 12px; }
 .run-meta-summary { min-height: 32px; height: auto; flex-wrap: wrap; padding: 5px 1px; font-size: 12px; }
-.run-meta-grid span { font-size: 11px; }
+.run-meta-grid span { font-size: 12px; }
 .run-meta-grid strong { font-size: 12px; }
 .thinking-state { font-size: 13px; }
 .thinking-state span { font-size: 12px; }
@@ -168,7 +168,7 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
   border: 1px solid var(--border); border-radius: 8px; padding: 4px 7px; background: var(--surface-2); color: var(--muted); font-size: 12px;
 }
 .message-attachments span span, .attachment-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.message-attachments small, .attachment-chip small { color: var(--faint); font-size: 11px; white-space: nowrap; }
+.message-attachments small, .attachment-chip small { color: var(--faint); font-size: 12px; white-space: nowrap; }
 .attachment-chip button { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px; color: var(--faint); }
 .attachment-chip button:hover { background: var(--surface-3); color: var(--text); }
 .execute-plan { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; margin: 4px 0 8px; padding: 0 11px; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; }
@@ -194,10 +194,10 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 .attach-button { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); flex: 0 0 auto; }
 .attach-button:hover:not(:disabled), .add-provider-inline:hover { background: var(--surface-3); color: var(--text); }
 .add-provider-inline { height: 32px; padding: 0 8px; border-radius: 8px; color: var(--accent-ink); font-size: 12px; font-weight: 600; white-space: nowrap; }
-.composer-hint { margin-top: 5px; font-size: 11px; }
+.composer-hint { margin-top: 5px; font-size: 12px; }
 .composer-hint kbd { font-size: 11px; }
 .send-group { margin-left: auto; flex: 0 0 auto; }
-.context-ring span { font-size: 11px; font-family: "Cascadia Code", monospace; }
+.context-ring span { font-size: 12px; font-family: "Cascadia Code", monospace; }
 .send-button, .stop-button { width: 32px; height: 32px; }
 
 /* WebView-safe custom dropdowns */
@@ -232,7 +232,7 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 .inspector { min-width: 340px; max-width: 620px; background: var(--surface-2); }
 .inspector-tabs { height: 48px; min-height: 48px; align-items: stretch; padding: 0 8px; }
 .inspector-tabs > button { height: 48px; padding: 0 8px; border-bottom-width: 1px; font-size: 12px; }
-.inspector-tabs > button span { min-width: 17px; height: 17px; font-size: 11px; border-radius: 6px; }
+.inspector-tabs > button span { min-width: 17px; height: 17px; font-size: 12px; border-radius: 6px; }
 .inspector-tabs .refresh-inspector, .close-inspector { height: 48px; }
 .panel-summary strong, .file-preview-header strong { font-size: 13px; }
 .panel-summary span, .changed-file-list button, .file-browser button, .context-list, .terminal-entry { font-size: 12px; }
@@ -300,9 +300,9 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 .tool-activity summary strong, .context-checkpoint summary strong, .mcp-tools header strong, .model-override-editor summary { font-size: 12px; }
 .tool-activity summary small, .tool-activity time, .context-checkpoint summary small,
 .mcp-tools header small, .model-override-editor > p, .context-estimate-note,
-.search-match-list small, .no-search-matches, .context-card small { font-size: 11px; }
+.search-match-list small, .no-search-matches, .context-card small { font-size: 12px; }
 .tool-activity pre, .context-record pre, .context-checkpoint pre, .json-editor,
-.search-match-list strong, .search-match-list code, .mcp-tools code { font-size: 11px; font-family: "Cascadia Code", monospace; }
+.search-match-list strong, .search-match-list code, .mcp-tools code { font-size: 12px; font-family: "Cascadia Code", monospace; }
 
 @media (max-width: 1120px) {
   .inspector { position: absolute; right: 0; top: 0; bottom: 0; z-index: 10; width: min(420px, 92vw) !important; box-shadow: -18px 0 45px rgba(20,20,16,.1); }
@@ -380,7 +380,7 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 .diff-line,
 .diff-line code,
 .line-number {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 
@@ -475,7 +475,7 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: "Cascadia Code", monospace;
-  font-size: 11px;
+  font-size: 12px;
 }
 .diff-file-header small { font: 11px "Cascadia Code", monospace; }
 .diff-additions { color: var(--green); }
@@ -489,7 +489,7 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: "Cascadia Code", monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
 }
 .file-preview-header button {
@@ -510,3 +510,58 @@ button { transition: color 140ms ease, background-color 140ms ease, border-color
 .virtual-feed { position: relative; width: 100%; }
 .virtual-feed-row { position: absolute; top: 0; left: 0; width: 100%; }
 .diff-loading, .terminal-loading { min-height: 120px; display: flex; align-items: center; justify-content: center; gap: 7px; color: var(--faint); font-size: 12px; }
+
+/* Task and message actions */
+.thread-item{position:relative;min-height:31px;border-radius:7px;display:flex;align-items:center}.thread-item:hover{background:var(--surface-3)}.thread-item.active{background:var(--surface);box-shadow:0 1px 2px rgba(20,20,16,.05)}.thread-select{height:31px!important;min-width:0;flex:1!important;background:transparent!important;box-shadow:none!important}.thread-actions{display:flex;opacity:0;pointer-events:none;padding-right:3px}.thread-item:hover .thread-actions,.thread-item:focus-within .thread-actions{opacity:1;pointer-events:auto}.thread-actions button{width:25px!important;height:25px!important;min-height:25px!important;padding:0!important;display:grid!important;place-items:center}.thread-actions .delete:hover{color:var(--red);background:var(--red-soft)}.archived-empty{font-size:12px;color:var(--faint);padding:7px 9px}.message{position:relative}.message-actions{display:flex;gap:2px;color:var(--faint);opacity:0;transition:opacity 140ms ease}.message:hover .message-actions,.message:focus-within .message-actions{opacity:1}.message-actions button{width:27px;height:27px;border-radius:7px;display:grid;place-items:center}.message-actions button:hover{color:var(--text);background:var(--surface-3)}.user-actions{justify-content:flex-end;margin-top:3px}.assistant-actions{position:absolute;right:0;top:-4px}.message.assistant .message-body{position:relative}
+
+.question-card { display:grid; gap:12px; padding:16px; margin:10px 0; border:1px solid var(--border-strong); border-radius:14px; background:var(--panel); box-shadow:var(--shadow-soft); }
+.question-heading { display:flex; gap:10px; align-items:flex-start; }
+.question-heading > svg { color:var(--accent); margin-top:2px; }
+.question-heading div { display:grid; gap:3px; }
+.question-heading strong { font-size:14px; line-height:1.45; }
+.question-heading span { color:var(--text-muted); font-size:12px; }
+.question-options { display:grid; gap:7px; }
+.question-options button { display:flex; align-items:center; gap:10px; min-height:48px; padding:8px 10px; text-align:left; border:1px solid var(--border); border-radius:10px; background:var(--surface-subtle); }
+.question-options button:hover, .question-options button:focus-visible { border-color:var(--accent); background:var(--accent-soft); }
+.question-options kbd { display:grid; place-items:center; width:22px; height:22px; border:1px solid var(--border); border-radius:6px; color:var(--text-muted); font:12px var(--font-mono); }
+.question-options span { display:grid; gap:2px; flex:1; }
+.question-options strong { font-size:13px; }
+.question-options small { color:var(--text-muted); font-size:12px; line-height:1.4; }
+.question-other { display:flex; gap:8px; }
+.question-other input { flex:1; min-width:0; height:36px; padding:0 10px; border:1px solid var(--border); border-radius:8px; background:var(--input-bg); color:var(--text); }
+.question-other button { padding:0 13px; border-radius:8px; background:var(--accent); color:#fff; font-weight:600; }
+.question-other button:disabled { opacity:.45; }
+
+.api-type-note { margin: -4px 0 2px; padding: 8px 10px; border-radius: 8px; background: var(--warning-soft, rgba(202,138,4,.09)); color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.api-type-note code { font-family: var(--font-mono); color: var(--text); }
+
+/* Provider model availability test */
+.model-table-head, .model-row { grid-template-columns: minmax(150px, 1fr) 150px 86px 40px; }
+.model-entry + .model-entry { border-top: 1px solid var(--border); }
+.model-entry .model-row { border-top: 0; }
+.model-row > .model-test-button { width: 78px; padding: 0 8px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--muted); font-size: 12px; }
+.model-row > .model-test-button:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+.model-row > .model-test-button:disabled { opacity: .55; cursor: default; }
+.model-row > .model-delete-button:hover { background: var(--red-soft); color: var(--red); }
+.model-test-result { padding: 0 10px 8px; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.model-test-result.success { color: var(--green); }
+.model-test-result.failed { color: var(--red); }
+@media (max-width: 760px) {
+  .model-table-head, .model-row { grid-template-columns: minmax(110px, 1fr) 112px 76px 36px; }
+  .model-row > .model-test-button { width: 70px; padding: 0 5px; }
+}
+
+/* GitHub Release updater */
+.update-banner { position: fixed; z-index: 90; top: 14px; left: 50%; transform: translateX(-50%); width: min(620px, calc(100vw - 28px)); min-height: 58px; display: flex; align-items: center; gap: 10px; padding: 9px 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: color-mix(in srgb, var(--surface) 96%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(16px); }
+.update-banner-icon { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; background: var(--accent-soft); color: var(--accent); }
+.update-banner-copy { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.update-banner-copy strong { font-size: 13px; font-weight: 600; }
+.update-banner-copy span { max-height: 38px; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.45; white-space: pre-line; }
+.update-banner-actions { display: flex; align-items: center; gap: 6px; }
+.update-banner-actions .primary, .update-banner-actions .secondary { min-width: max-content; height: 32px; padding: 0 12px; font-size: 12px; }
+.update-banner-actions .icon-button { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 8px; color: var(--muted); }
+.update-banner-actions .icon-button:hover { background: var(--surface-3); color: var(--text); }
+.update-progress { position: absolute; right: 0; bottom: 0; left: 0; height: 2px; background: var(--surface-3); }
+.update-progress i { display: block; height: 100%; background: var(--accent); transition: width 140ms ease; }
+.about-row .check-update-button { margin-left: auto; height: 32px; padding: 0 12px; font-size: 12px; }
+@media (max-width: 640px) { .update-banner { align-items: flex-start; flex-wrap: wrap; } .update-banner-actions { margin-left: 42px; } }

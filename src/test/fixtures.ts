@@ -104,6 +104,7 @@ export const bootstrap = (): AppBootstrap => ({
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     unreadApproval: false,
+    archived: false,
   }],
   providers: [provider(), provider("provider-b", "model-b")],
   mcpServers: [mcpServer()],

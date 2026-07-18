@@ -19,8 +19,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { discoverProviderModelsDraft, saveSettings, testMcpServer } from "../lib/api";
+import { discoverProviderModelsDraft, saveSettings, testMcpServer, testProviderModelDraft } from "../lib/api";
 import type {
+  DraftModelTestResult,
   McpServerConfig,
   ProviderApiType,
   ProviderModelInput,
@@ -97,12 +98,14 @@ function ProvidersModal() {
   const [saving, setSaving] = useState(false);
   const [result, setResult] = useState("");
   const [manualModel, setManualModel] = useState("");
+  const [testingModels, setTestingModels] = useState<Set<string>>(() => new Set());
+  const [modelTests, setModelTests] = useState<Record<string, DraftModelTestResult | { ok: false; error: string }>>({});
 
   const choose = (id: string) => {
     const profile = providers.find((item) => item.id === id);
-    setSelected(id); setDraft(toInput(profile)); setResult(""); setManualModel("");
+    setSelected(id); setDraft(toInput(profile)); setResult(""); setManualModel(""); setModelTests({}); setTestingModels(new Set());
   };
-  const create = () => { setSelected(""); setDraft(toInput()); setResult(""); setManualModel(""); };
+  const create = () => { setSelected(""); setDraft(toInput()); setResult(""); setManualModel(""); setModelTests({}); setTestingModels(new Set()); };
 
   const fetchModels = async () => {
     if (!draft.baseUrl.trim()) { setResult("请先填写 Base URL。"); return; }
@@ -146,6 +149,20 @@ function ProvidersModal() {
     return { ...current, models, defaultModel: current.defaultModel === modelId ? models[0]?.modelId ?? "" : current.defaultModel };
   });
 
+  const testModel = async (modelId: string) => {
+    if (!draft.baseUrl.trim()) { setResult("请先填写 Base URL。"); return; }
+    setTestingModels((current) => new Set(current).add(modelId));
+    setModelTests((current) => { const next = { ...current }; delete next[modelId]; return next; });
+    try {
+      const tested = await testProviderModelDraft(draft.id, draft.apiType, draft.baseUrl.trim(), draft.apiKey, modelId);
+      setModelTests((current) => ({ ...current, [modelId]: tested }));
+    } catch (error) {
+      setModelTests((current) => ({ ...current, [modelId]: { ok: false, error: String(error) } }));
+    } finally {
+      setTestingModels((current) => { const next = new Set(current); next.delete(modelId); return next; });
+    }
+  };
+
   const persist = async () => {
     if (!draft.name.trim()) { setResult("请填写供应商显示名称。"); return; }
     if (!draft.baseUrl.trim()) { setResult("请填写 Base URL。"); return; }
@@ -174,11 +191,11 @@ function ProvidersModal() {
       <div className="settings-form provider-form">
         {existing?.legacy ? <div className="legacy-provider-note"><strong>旧版兼容配置</strong><p>此配置使用原生 {existing.kind} 适配器并保持只读，避免保存时改变现有请求行为或凭据。</p><dl><dt>Base URL</dt><dd>{existing.baseUrl}</dd><dt>模型</dt><dd>{existing.models.map((model) => model.modelId).join("、") || existing.defaultModel}</dd></dl></div> : <>
           <label>供应商显示名称<input value={draft.name} onChange={(event) => setDraft((value) => ({ ...value, name: event.target.value }))} placeholder="例如：公司网关" autoFocus={!draft.id}/></label>
-          <div className="provider-api-type"><span>API 类型</span><div className="segmented" role="group" aria-label="API 类型">{(["responses", "chat-completions"] as ProviderApiType[]).map((type) => <button key={type} className={draft.apiType === type ? "active" : ""} onClick={() => setDraft((value) => ({ ...value, apiType: type }))}>{apiTypeLabel(type)}</button>)}</div></div>
+          <div className="provider-api-type"><span>API 类型</span><div className="segmented" role="group" aria-label="API 类型">{(["responses", "chat-completions"] as ProviderApiType[]).map((type) => <button key={type} className={draft.apiType === type ? "active" : ""} onClick={() => setDraft((value) => ({ ...value, apiType: type }))}>{apiTypeLabel(type)}</button>)}</div></div>{draft.apiType === "responses" && <p className="api-type-note">Responses API 仅适用于明确支持 <code>/responses</code> 的服务；大多数 OpenAI 兼容服务请选 Chat Completions。</p>}
           <label>Base URL<input value={draft.baseUrl} onChange={(event) => setDraft((value) => ({ ...value, baseUrl: event.target.value }))} placeholder="https://api.example.com/v1" spellCheck={false}/></label>
           <label>API Key<div className="secret-input"><input type={showKey ? "text" : "password"} value={draft.apiKey ?? ""} onChange={(event) => setDraft((value) => ({ ...value, apiKey: event.target.value }))} placeholder={existing?.hasCredential ? "已保存；留空表示不修改" : "sk-..."} autoComplete="off"/><button onClick={() => setShowKey((value) => !value)} aria-label={showKey ? "隐藏密钥" : "显示密钥"}>{showKey ? <EyeOff size={16}/> : <Eye size={16}/>}</button></div></label>
           <section className="provider-model-section"><header><div><strong>模型列表</strong><span>上下文单位统一为万 Token</span></div><button className="secondary" onClick={() => void fetchModels()} disabled={fetching || !draft.baseUrl.trim()}>{fetching ? <LoaderCircle className="spin" size={14}/> : <Download size={14}/>}从上游获取模型</button></header>
-            <div className="model-table"><div className="model-table-head"><span>模型 ID</span><span>上下文（万 Token）</span><span/></div>{draft.models.map((model) => <div className="model-row" key={model.modelId}><code title={model.modelId}>{model.modelId}</code><input aria-label={`${model.modelId} 上下文长度`} type="number" min="0.0001" step="0.0001" value={toWan(model.contextWindowTokens)} onChange={(event) => updateContext(model.modelId, event.target.value)} placeholder="未知"/><button onClick={() => deleteModel(model.modelId)} aria-label={`删除模型 ${model.modelId}`}><Trash2 size={15}/></button></div>)}{!draft.models.length && <div className="model-empty">尚无模型，请从上游获取或手动添加。</div>}</div>
+            <div className="model-table"><div className="model-table-head"><span>模型 ID</span><span>上下文（万 Token）</span><span>可用性</span><span/></div>{draft.models.map((model) => { const tested = modelTests[model.modelId]; const testing = testingModels.has(model.modelId); return <div className="model-entry" key={model.modelId}><div className="model-row"><code title={model.modelId}>{model.modelId}</code><input aria-label={`${model.modelId} 上下文长度`} type="number" min="0.0001" step="0.0001" value={toWan(model.contextWindowTokens)} onChange={(event) => updateContext(model.modelId, event.target.value)} placeholder="未知"/><button className="model-test-button" onClick={() => void testModel(model.modelId)} disabled={testing || !draft.baseUrl.trim()} aria-label={`测试模型 ${model.modelId}`}>{testing ? <LoaderCircle className="spin" size={14}/> : <TestTube2 size={14}/>}<span>{testing ? "测试中" : "测试"}</span></button><button className="model-delete-button" onClick={() => deleteModel(model.modelId)} aria-label={`删除模型 ${model.modelId}`}><Trash2 size={15}/></button></div>{tested && <div className={`model-test-result ${tested.ok ? "success" : "failed"}`}>{tested.ok ? <>可用 · {tested.latencyMs}ms · {tested.responsePreview}</> : <>不可用 · {"error" in tested ? tested.error : "未知错误"}</>}</div>}</div>; })}{!draft.models.length && <div className="model-empty">尚无模型，请从上游获取或手动添加。</div>}</div>
             <div className="manual-model"><input value={manualModel} onChange={(event) => setManualModel(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addModel(); } }} placeholder="手动输入模型 ID"/><button className="secondary" onClick={addModel}><Plus size={14}/>添加模型</button></div>
           </section>
         </>}
@@ -324,7 +341,7 @@ function SettingsModal() {
     useAppStore.setState((state) => ({ bootstrapData: state.bootstrapData ? { ...state.bootstrapData, settings: next } : null }));
     document.documentElement.dataset.theme = theme;
   };
-  return <><ModalHeader icon={Monitor} title="设置" subtitle="Axiom 默认不发送遥测，诊断数据仅保存在本机。" /><div className="simple-settings"><section><h3>外观</h3><div className="theme-picker"><button className={settings.theme === "system" ? "active" : ""} onClick={() => void update("system")}><Monitor size={18} /><span>跟随系统</span></button><button className={settings.theme === "light" ? "active" : ""} onClick={() => void update("light")}><Sun size={18} /><span>浅色</span></button><button className={settings.theme === "dark" ? "active" : ""} onClick={() => void update("dark")}><Moon size={18} /><span>深色</span></button></div></section><section><h3>隐私</h3><div className="privacy-card"><Cloud size={18} /><div><strong>完全本地的数据层</strong><p>项目、对话、运行事件和配置保存在本机 SQLite。只有你配置的供应商和远程 MCP 会产生网络请求。</p></div><span className="local-badge">LOCAL</span></div></section><section><h3>关于</h3><div className="about-row"><div className="axiom-mark"><i /><i /><i /></div><div><strong>Axiom 1.0.0</strong><span>Apache-2.0 · Windows 优先</span></div></div></section></div></>;
+  return <><ModalHeader icon={Monitor} title="设置" subtitle="Axiom 默认不发送遥测，诊断数据仅保存在本机。" /><div className="simple-settings"><section><h3>外观</h3><div className="theme-picker"><button className={settings.theme === "system" ? "active" : ""} onClick={() => void update("system")}><Monitor size={18} /><span>跟随系统</span></button><button className={settings.theme === "light" ? "active" : ""} onClick={() => void update("light")}><Sun size={18} /><span>浅色</span></button><button className={settings.theme === "dark" ? "active" : ""} onClick={() => void update("dark")}><Moon size={18} /><span>深色</span></button></div></section><section><h3>隐私</h3><div className="privacy-card"><Cloud size={18} /><div><strong>完全本地的数据层</strong><p>项目、对话、运行事件和配置保存在本机 SQLite。只有你配置的供应商和远程 MCP 会产生网络请求。</p></div><span className="local-badge">LOCAL</span></div></section><section><h3>关于</h3><div className="about-row"><div className="axiom-mark"><i /><i /><i /></div><div><strong>Axiom 1.0.1</strong><span>Apache-2.0 · Windows 优先</span></div><button className="secondary check-update-button" onClick={() => window.dispatchEvent(new Event("axiom-check-update"))}>检查更新</button></div></section></div></>;
 }
 
 function SearchModal() {
@@ -342,7 +359,7 @@ function toInput(profile?: ProviderProfile): ProviderProfileInput {
     id: profile.id, kind: profile.kind, name: profile.name, baseUrl: profile.baseUrl, defaultModel: profile.models[0]?.modelId ?? profile.defaultModel,
     enabled: true, timeoutSeconds: 120, extraHeaders: {}, apiKey: "", apiType: profile.apiType,
     models: profile.models.filter((model) => model.source !== "legacy").map((model) => ({ modelId: model.modelId, displayName: model.displayName, contextWindowTokens: model.contextWindowTokens ?? null, source: model.source === "upstream" ? "upstream" : "manual" })),
-  } : { kind: "open-ai-compatible", name: "", baseUrl: "", defaultModel: "", enabled: true, timeoutSeconds: 120, extraHeaders: {}, apiKey: "", apiType: "responses", models: [] };
+  } : { kind: "open-ai-compatible", name: "", baseUrl: "", defaultModel: "", enabled: true, timeoutSeconds: 120, extraHeaders: {}, apiKey: "", apiType: "chat-completions", models: [] };
 }
 
 function apiTypeLabel(type: ProviderApiType): string { return type === "responses" ? "Responses API" : "Chat Completions"; }

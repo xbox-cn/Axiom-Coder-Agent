@@ -19,6 +19,7 @@ import {
 import { saveSettings } from "../lib/api";
 import type { FileEntry, InspectorTab } from "../lib/types";
 import { useAppStore } from "../store/appStore";
+import { resolveContextLimit } from "../lib/context";
 
 const LazyDiffView = lazy(() => import("./DiffView"));
 const LazyTerminalPanel = lazy(() => import("./TerminalPanel"));
@@ -190,12 +191,16 @@ function FilesPanel() {
 
 function ContextPanel(){
   const detail=useAppStore(s=>s.threadDetail);
+  const providers=useAppStore(s=>s.bootstrapData?.providers??[]);
+  const providerId=useAppStore(s=>s.providerId);
+  const modelId=useAppStore(s=>s.modelId);
   const liveRecords=useAppStore(s=>s.contextRecords);
   const restoreSnapshot=useAppStore(s=>s.restoreContextSnapshot);
   const [restoringId,setRestoringId]=useState<string|null>(null);
-  const latest=detail?.runs.at(-1)?.usage;
+  const latestRun=detail?.runs.at(-1);
+  const latest=latestRun?.usage;
   const context=latest?.contextTokens??0;
-  const limit=Math.max(1,latest?.contextLimit??128000);
+  const limit=Math.max(1,resolveContextLimit(providers,providerId,modelId,latestRun));
   const pct=Math.min(100,Math.round(context/limit*100));
   const snapshots=detail?.contextSnapshots??[];
   const compressionCount=Math.max(liveRecords.length,snapshots.length);

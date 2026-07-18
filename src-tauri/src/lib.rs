@@ -31,7 +31,7 @@ struct RunningRun {
 struct AppState {
     db: Arc<Database>,
     running: Arc<Mutex<HashMap<String, RunningRun>>>,
-    pending_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pending_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
 }
 
 const MAX_ATTACHMENTS: usize = 10;
@@ -68,6 +68,36 @@ fn create_thread(
 #[tauri::command]
 fn get_thread(state: State<'_, AppState>, thread_id: String) -> Result<ThreadDetail, String> {
     state.db.get_thread(&thread_id)
+}
+
+#[tauri::command]
+fn archive_thread(
+    state: State<'_, AppState>,
+    thread_id: String,
+    archived: bool,
+) -> Result<(), String> {
+    if state
+        .running
+        .lock()
+        .values()
+        .any(|run| run.thread_id == thread_id)
+    {
+        return Err("运行中的任务不能归档，请先停止运行".to_string());
+    }
+    state.db.archive_thread(&thread_id, archived)
+}
+
+#[tauri::command]
+fn delete_thread(state: State<'_, AppState>, thread_id: String) -> Result<(), String> {
+    if state
+        .running
+        .lock()
+        .values()
+        .any(|run| run.thread_id == thread_id)
+    {
+        return Err("运行中的任务不能删除，请先停止运行".to_string());
+    }
+    state.db.delete_thread(&thread_id)
 }
 
 #[tauri::command]
@@ -146,6 +176,35 @@ async fn discover_provider_models_draft(
     api_key: Option<String>,
 ) -> Result<Vec<ModelDescriptor>, String> {
     provider::discover_models_draft(api_type, &base_url, api_key.as_deref()).await
+}
+
+#[tauri::command]
+async fn test_provider_model_draft(
+    state: State<'_, AppState>,
+    provider_id: Option<String>,
+    api_type: ProviderApiType,
+    base_url: String,
+    api_key: Option<String>,
+    model_id: String,
+) -> Result<DraftModelTestResult, String> {
+    // A draft key lives only for this command. When editing an existing provider, an empty
+    // key reuses its Credential Manager entry without exposing it to the frontend.
+    let draft_key = api_key.filter(|value| !value.trim().is_empty());
+    let stored_key = if draft_key.is_none() {
+        provider_id
+            .as_deref()
+            .and_then(|id| state.db.get_provider_credential_ref(id).ok().flatten())
+            .and_then(|reference| provider::load_api_key(&reference))
+    } else {
+        None
+    };
+    provider::test_model_draft(
+        api_type,
+        &base_url,
+        draft_key.as_deref().or(stored_key.as_deref()),
+        &model_id,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -600,8 +659,28 @@ fn respond_approval(
         .remove(&approval_id)
         .ok_or_else(|| "Approval request is no longer pending".to_string())?;
     sender
-        .send(approved)
+        .send(if approved { "approved" } else { "denied" }.to_string())
         .map_err(|_| "Agent stopped before the approval decision was delivered".to_string())
+}
+
+#[tauri::command]
+fn respond_user_question(
+    state: State<'_, AppState>,
+    question_id: String,
+    answer: String,
+) -> Result<(), String> {
+    let answer = answer.trim();
+    if answer.is_empty() || answer.len() > 2_000 {
+        return Err("Answer must contain between 1 and 2000 characters".to_string());
+    }
+    let sender = state
+        .pending_approvals
+        .lock()
+        .remove(&question_id)
+        .ok_or_else(|| "Question is no longer pending".to_string())?;
+    sender
+        .send(answer.to_string())
+        .map_err(|_| "Agent stopped before the answer was delivered".to_string())
 }
 
 fn paths_equal(left: &str, right: &str) -> bool {
@@ -700,6 +779,12 @@ fn start_agent_run(
         return Err("A writable Agent is already running in this workspace".to_string());
     }
     config.created_at = Utc::now().to_rfc3339();
+    let context_limit = state
+        .db
+        .get_model_override(&config.provider_id, &config.model_id)?
+        .and_then(|model| model.context_window)
+        .filter(|limit| *limit > 0)
+        .unwrap_or_else(|| provider::builtin_context_limit(&config.model_id));
     state.db.add_message_with_attachments(
         &thread_id,
         MessageRole::User,
@@ -707,7 +792,9 @@ fn start_agent_run(
         None,
         attachments,
     )?;
-    let run = state.db.create_run(&thread_id, &config)?;
+    let run = state
+        .db
+        .create_run_with_context(&thread_id, &config, context_limit)?;
     if config.run_mode == RunMode::Goal {
         state.db.create_goal(&run)?;
     }
@@ -842,7 +929,7 @@ async fn run_agent(
     app: tauri::AppHandle,
     db: Arc<Database>,
     running: Arc<Mutex<HashMap<String, RunningRun>>>,
-    pending_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pending_approvals: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
     run: RunRecord,
     mut cancel: watch::Receiver<bool>,
 ) {
@@ -915,7 +1002,7 @@ async fn run_agent(
                         run.config.permission_mode,
                         run.config.run_mode,
                         if run.config.run_mode == RunMode::Plan {
-                            "Plan mode is enforced read-only. Inspect the project and return a decision-complete implementation plan. Do not attempt writes or shell commands. MCP calls are allowed only for tools explicitly marked read-only and non-destructive; all others are rejected by the permission layer."
+                            "Plan mode is enforced read-only. Inspect the project and return a decision-complete implementation plan. Do not attempt writes or shell commands. MCP calls are allowed only for tools explicitly marked read-only and non-destructive; all others are rejected by the permission layer. When an ambiguity materially affects the plan, call ask_user with one short question and 2-3 concrete options instead of asking in ordinary response text."
                         } else if run.config.run_mode == RunMode::Goal {
                             "Goal mode continues without a total turn or time limit. At the end of every non-tool response append exactly one control block: ```axiom-goal\n{\"action\":\"continue|complete|blocked\"}\n```. Use continue while meaningful work remains, complete only when verified, and blocked only when progress requires user input."
                         } else {
@@ -1321,7 +1408,7 @@ async fn execute_agent_tool(
     run: &RunRecord,
     root: &str,
     project_id: &str,
-    pending_approvals: &Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pending_approvals: &Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
     cancel: &mut watch::Receiver<bool>,
     sequence: &mut u64,
     call: &ProtocolToolCall,
@@ -1330,7 +1417,7 @@ async fn execute_agent_tool(
     if run.config.run_mode == RunMode::Plan
         && !matches!(
             call.name.as_str(),
-            "list_files" | "read_file" | "search_files" | "git_status" | "git_diff"
+            "list_files" | "read_file" | "search_files" | "git_status" | "git_diff" | "ask_user"
         )
     {
         return Err(format!(
@@ -1339,6 +1426,12 @@ async fn execute_agent_tool(
         ));
     }
     match call.name.as_str() {
+        "ask_user" => {
+            if run.config.run_mode != RunMode::Plan {
+                return Err("ask_user is only available in Plan mode".to_string());
+            }
+            request_user_question(app, db, run, pending_approvals, cancel, sequence, call).await
+        }
         "list_files" => {
             let path = optional_arg(&call.arguments, "path");
             let files = tools::list_files(root_path, path)?;
@@ -1489,7 +1582,7 @@ async fn request_tool_approval(
     app: &tauri::AppHandle,
     db: &Arc<Database>,
     run: &RunRecord,
-    pending_approvals: &Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>,
+    pending_approvals: &Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
     cancel: &mut watch::Receiver<bool>,
     sequence: &mut u64,
     call: &ProtocolToolCall,
@@ -1544,14 +1637,97 @@ async fn request_tool_approval(
         }
         value = receiver => value.map_err(|_| "Approval channel closed".to_string())?,
     };
+    let approved = decision == "approved";
     pending_approvals.lock().remove(&approval_id);
-    db.decide_approval(&approval_id, decision)?;
+    db.decide_approval(&approval_id, approved)?;
     let _ = db.update_run(&run.id, &run.thread_id, RunStatus::ToolRunning, None, None);
     if run.config.run_mode == RunMode::Goal {
         let _ = db.update_goal_turn_status(&run.id, "running");
         let _ = db.update_goal_status(&run.id, "running");
     }
-    Ok(decision)
+    Ok(approved)
+}
+
+async fn request_user_question(
+    app: &tauri::AppHandle,
+    db: &Arc<Database>,
+    run: &RunRecord,
+    pending_questions: &Arc<Mutex<HashMap<String, oneshot::Sender<String>>>>,
+    cancel: &mut watch::Receiver<bool>,
+    sequence: &mut u64,
+    call: &ProtocolToolCall,
+) -> Result<String, String> {
+    let question = required_arg(&call.arguments, "question")?.trim();
+    let options = call
+        .arguments
+        .get("options")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "ask_user.options must be an array".to_string())?;
+    if !(2..=3).contains(&options.len()) {
+        return Err("ask_user requires 2 or 3 options".to_string());
+    }
+    let mut ids = std::collections::HashSet::new();
+    for option in options {
+        let id = option
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        let label = option
+            .get("label")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if id.is_empty() || label.is_empty() || !ids.insert(id.to_string()) {
+            return Err(
+                "ask_user option ids and labels must be non-empty and ids must be unique"
+                    .to_string(),
+            );
+        }
+    }
+    let question_id = uuid::Uuid::new_v4().to_string();
+    let request = ApprovalRequest {
+        id: question_id.clone(),
+        tool_name: "ask_user".to_string(),
+        summary: question.to_string(),
+        arguments: call.arguments.clone(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    let (sender, receiver) = oneshot::channel();
+    pending_questions.lock().insert(question_id.clone(), sender);
+    db.create_approval(&question_id, &run.id, "ask_user", question, &call.arguments)?;
+    let _ = db.update_run(
+        &run.id,
+        &run.thread_id,
+        RunStatus::AwaitingApproval,
+        None,
+        None,
+    );
+    emit_agent_event(
+        app,
+        db,
+        run,
+        sequence,
+        AgentEventKind::ApprovalRequested,
+        RunStatus::AwaitingApproval,
+        None,
+        None,
+        None,
+        None,
+        Some(request),
+        None,
+    );
+    let answer = tokio::select! {
+        _ = cancel.changed() => {
+            pending_questions.lock().remove(&question_id);
+            return Err(CANCELLED_SENTINEL.to_string());
+        }
+        value = receiver => value.map_err(|_| "Question channel closed".to_string())?,
+    };
+    pending_questions.lock().remove(&question_id);
+    db.decide_approval_value(&question_id, &answer)?;
+    let _ = db.update_run(&run.id, &run.thread_id, RunStatus::ToolRunning, None, None);
+    Ok(json!({"answer": answer}).to_string())
 }
 
 fn emit_agent_event(
@@ -2236,6 +2412,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
             let db = Database::open(&app_data)?;
@@ -2252,6 +2430,8 @@ pub fn run() {
             add_project,
             create_thread,
             get_thread,
+            archive_thread,
+            delete_thread,
             restore_context_snapshot,
             save_provider,
             delete_provider,
@@ -2259,6 +2439,7 @@ pub fn run() {
             save_model_override,
             discover_models,
             discover_provider_models_draft,
+            test_provider_model_draft,
             prepare_attachments,
             test_provider,
             save_mcp_server,
@@ -2280,7 +2461,8 @@ pub fn run() {
             cancel_agent_run,
             resume_goal,
             finish_goal,
-            respond_approval
+            respond_approval,
+            respond_user_question
         ])
         .run(tauri::generate_context!())
         .expect("error while running Axiom");

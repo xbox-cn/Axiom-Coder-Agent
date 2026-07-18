@@ -22,6 +22,8 @@ pub struct ThreadSummary {
     pub created_at: String,
     pub updated_at: String,
     pub unread_approval: bool,
+    #[serde(default)]
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +229,15 @@ pub struct UsageRecord {
     pub duration_ms: Option<u64>,
     pub first_token_ms: Option<u64>,
     pub estimated_cost_usd: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftModelTestResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub response_preview: String,
+    pub usage: Option<UsageRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

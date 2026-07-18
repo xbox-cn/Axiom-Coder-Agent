@@ -5,6 +5,7 @@ import { Sidebar } from "./components/Sidebar";
 import { Conversation } from "./components/Conversation";
 import { Inspector } from "./components/Inspector";
 import { AppModal } from "./components/AppModal";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { AlertCircle, X } from "lucide-react";
 import "./App.css";
 
@@ -53,6 +54,7 @@ export default function App(){
     {inspectorOpen&&<button className="inspector-backdrop" aria-label="关闭检查器抽屉" onClick={()=>setInspectorOpen(false,false)}/>}
     <Inspector/>
     <AppModal/>
+    <UpdateBanner/>
     {error&&<div className="error-toast" role="alert"><AlertCircle size={17}/><span>{error}</span><button onClick={clearError} aria-label="关闭错误"><X size={16}/></button></div>}
   </div>;
 }

@@ -35,6 +35,8 @@ function seed(status: RunStatus = "idle") {
     contextRecords: [],
     lastEventSequence: {},
     error: null,
+    runMode: "agent",
+    attachments: [],
   });
 }
 
@@ -76,10 +78,10 @@ describe("Composer", () => {
     expect(useAppStore.getState().permissionMode).toBe("workspace-auto");
   });
 
-  it("Ctrl+Enter 发送当前草稿和不可变运行配置", async () => {
+  it("Enter 发送当前草稿和不可变运行配置", async () => {
     useAppStore.setState({ draft: "检查项目" });
     render(<Composer />);
-    fireEvent.keyDown(screen.getByPlaceholderText(/描述任务/), { key: "Enter", ctrlKey: true });
+    fireEvent.keyDown(screen.getByPlaceholderText(/描述任务/), { key: "Enter" });
     await waitFor(() => expect(startAgentRun).toHaveBeenCalledOnce());
     expect(startAgentRun).toHaveBeenCalledWith(
       "thread-a",
@@ -89,10 +91,26 @@ describe("Composer", () => {
         modelId: "model-a",
         thinkingLevel: "medium",
         permissionMode: "workspace-auto",
+        runMode: "agent",
       }),
       [],
     );
     expect(useAppStore.getState().draft).toBe("");
+  });
+
+  it("Shift+Enter 只换行，不发送", () => {
+    useAppStore.setState({ draft: "检查项目" });
+    render(<Composer />);
+    fireEvent.keyDown(screen.getByPlaceholderText(/描述任务/), { key: "Enter", shiftKey: true });
+    expect(startAgentRun).not.toHaveBeenCalled();
+    expect(useAppStore.getState().draft).toBe("检查项目");
+  });
+
+  it("输入法正在组词时 Enter 不发送", () => {
+    useAppStore.setState({ draft: "检查项目" });
+    render(<Composer />);
+    fireEvent.keyDown(screen.getByPlaceholderText(/描述任务/), { key: "Enter", isComposing: true });
+    expect(startAgentRun).not.toHaveBeenCalled();
   });
 
   it("运行中显示停止按钮并取消活动运行", async () => {
@@ -102,12 +120,14 @@ describe("Composer", () => {
     await waitFor(() => expect(cancelAgentRun).toHaveBeenCalledWith("run-a"));
   });
 
-  it("上下文环显示当前占用和模型上限", () => {
+  it("上下文环优先显示供应商模型配置的 100 万上限", () => {
     const detail = threadDetail("completed");
     detail.runs = [runRecord("run-a", "completed")];
-    useAppStore.setState({ threadDetail: detail });
+    const data = bootstrap();
+    data.providers[0].models[0].contextWindowTokens = 1_000_000;
+    useAppStore.setState({ bootstrapData: data, threadDetail: detail });
     render(<Composer />);
-    expect(screen.getByTitle("当前上下文 7,200 / 128,000")).toHaveTextContent("6");
+    expect(screen.getByTitle("当前上下文 7,200 / 1,000,000")).toHaveTextContent("1");
   });
 
   it("状态切换后立即更新锁定状态", () => {

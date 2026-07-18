@@ -19,9 +19,9 @@ export const demoMessages: Message[] = [
 export const demoBootstrap: AppBootstrap = {
   projects:[{ id:projectId, name:"axiom-demo", path:"D:\\Projects\\axiom-demo", favorite:true, createdAt:now, updatedAt:now, gitBranch:"main" }],
   threads:[
-    { id:threadId, projectId, title:"修复登录会话并发刷新", status:"completed", createdAt:now, updatedAt:now, unreadApproval:false },
-    { id:"t2", projectId, title:"优化构建与包体积", status:"idle", createdAt:now, updatedAt:now, unreadApproval:false },
-    { id:"t3", projectId, title:"重构 Provider 适配层", status:"awaiting-approval", createdAt:now, updatedAt:now, unreadApproval:true },
+    { id:threadId, projectId, title:"修复登录会话并发刷新", status:"completed", createdAt:now, updatedAt:now, unreadApproval:false, archived:false },
+    { id:"t2", projectId, title:"优化构建与包体积", status:"idle", createdAt:now, updatedAt:now, unreadApproval:false, archived:false },
+    { id:"t3", projectId, title:"重构 Provider 适配层", status:"awaiting-approval", createdAt:now, updatedAt:now, unreadApproval:true, archived:false },
   ],
   providers:[],
   mcpServers:[

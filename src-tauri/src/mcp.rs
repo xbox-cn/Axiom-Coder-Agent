@@ -18,6 +18,15 @@ use tokio::{
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 
+#[cfg(windows)]
+fn hide_background_window(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    command.as_std_mut().creation_flags(0x08000000);
+}
+
+#[cfg(not(windows))]
+fn hide_background_window(_command: &mut Command) {}
+
 /// Converts every MCP environment/header value into an opaque Windows Credential
 /// Manager reference before the configuration is persisted in SQLite.
 pub fn protect_credentials(mut config: McpServerConfig) -> Result<McpServerConfig, String> {
@@ -133,6 +142,7 @@ impl StdioSession {
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| "stdio MCP 缺少 command".to_string())?;
         let mut process = Command::new(command);
+        hide_background_window(&mut process);
         process
             .args(&config.args)
             .stdin(Stdio::piped())
@@ -195,7 +205,7 @@ impl StdioSession {
                 json!({
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name":"Axiom","version":"1.0.0"}
+                    "clientInfo": {"name":"Axiom","version":"1.0.1"}
                 }),
             )
             .await?;
@@ -290,7 +300,7 @@ async fn http_initialize(
         "params":{
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities":{},
-            "clientInfo":{"name":"Axiom","version":"1.0.0"}
+            "clientInfo":{"name":"Axiom","version":"1.0.1"}
         }
     });
     let (value, session) = send_http_with_session(client, config, &payload, None).await?;

@@ -8,6 +8,7 @@ import type {
   AppBootstrap,
   AppSettings,
   AttachmentSnapshot,
+  DraftModelTestResult,
   FileEntry,
   GitSummary,
   McpServerConfig,
@@ -69,7 +70,17 @@ export async function createThread(projectId: string, title?: string): Promise<T
     createdAt: now,
     updatedAt: now,
     unreadApproval: false,
+    archived: false,
   };
+}
+
+
+export async function archiveThread(threadId: string, archived: boolean): Promise<void> {
+  if (isTauri()) return invoke("archive_thread", { threadId, archived });
+}
+
+export async function deleteThread(threadId: string): Promise<void> {
+  if (isTauri()) return invoke("delete_thread", { threadId });
 }
 
 export async function getThread(threadId: string): Promise<ThreadDetail> {
@@ -124,6 +135,26 @@ export async function discoverProviderModelsDraft(
     maxOutputTokens: null,
     capabilities: { tools: true, vision: true, reasoning: true, reasoningLevels: ["off", "low", "medium", "high", "xhigh", "auto"], usageReporting: true },
   }));
+}
+
+export async function testProviderModelDraft(
+  providerId: string | undefined,
+  apiType: ProviderApiType,
+  baseUrl: string,
+  apiKey: string | undefined,
+  modelId: string,
+): Promise<DraftModelTestResult> {
+  if (isTauri()) {
+    return invoke("test_provider_model_draft", {
+      providerId: providerId || null,
+      apiType,
+      baseUrl,
+      apiKey: apiKey || null,
+      modelId,
+    });
+  }
+  await sleep(520);
+  return { ok: true, latencyMs: 520, responsePreview: "Hello! How can I help?", usage: null };
 }
 
 export async function discoverModels(providerId: string): Promise<ModelDescriptor[]> {
@@ -326,6 +357,15 @@ export async function respondApproval(approvalId: string, approved: boolean): Pr
   if (!pending) throw new Error("审批请求已结束");
   mockApprovals.delete(approvalId);
   pending.resolve(approved);
+}
+
+
+export async function respondUserQuestion(questionId: string, answer: string): Promise<void> {
+  if (isTauri()) return invoke("respond_user_question", { questionId, answer });
+  const pending = mockApprovals.get(questionId);
+  if (!pending) throw new Error("提问已结束");
+  mockApprovals.delete(questionId);
+  pending.resolve(true);
 }
 
 export async function restoreRunChanges(runId: string): Promise<number> {
